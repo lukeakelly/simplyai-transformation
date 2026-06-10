@@ -23,9 +23,11 @@ type Summary = {
 export function OwnersClient({
   summary,
   unassigned,
+  canEdit,
 }: {
   summary: Summary[];
   unassigned: number;
+  canEdit: boolean;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -73,16 +75,18 @@ export function OwnersClient({
             {summary.length} owners &middot; {unassigned} tasks unassigned
           </p>
         </div>
-        <button
-          onClick={() => setAdding((v) => !v)}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-        >
-          <Plus size={16} /> Add owner
-        </button>
+        {canEdit && (
+          <button
+            onClick={() => setAdding((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+          >
+            <Plus size={16} /> Add owner
+          </button>
+        )}
       </header>
 
       <div className="p-6 space-y-4">
-        {adding && (
+        {canEdit && adding && (
           <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm flex flex-wrap items-end gap-3">
             <Field label="Name" value={name} onChange={setName} />
             <Field label="Title / role" value={title} onChange={setTitle} />
@@ -109,7 +113,7 @@ export function OwnersClient({
               key={p.id}
               className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm"
             >
-              {editId === p.id ? (
+              {canEdit && editId === p.id ? (
                 <InlineEdit
                   person={p}
                   onCancel={() => setEditId(null)}
@@ -141,22 +145,24 @@ export function OwnersClient({
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        onClick={() => setEditId(p.id)}
-                        className="p-1.5 rounded hover:bg-slate-100 text-slate-400"
-                        aria-label="Edit"
-                      >
-                        <Pencil size={15} />
-                      </button>
-                      <button
-                        onClick={() => remove(p.id, p.name)}
-                        className="p-1.5 rounded hover:bg-red-50 text-red-500"
-                        aria-label="Delete"
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
+                    {canEdit && (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => setEditId(p.id)}
+                          className="p-1.5 rounded hover:bg-slate-100 text-slate-400"
+                          aria-label="Edit"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          onClick={() => remove(p.id, p.name)}
+                          className="p-1.5 rounded hover:bg-red-50 text-red-500"
+                          aria-label="Delete"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-3 gap-2 mt-4 text-center">

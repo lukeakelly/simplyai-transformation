@@ -8,6 +8,30 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  role         String
+  permission   String   @default("editor")
+  isAdmin      Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorRole  String
+  action     String
+  entityType String
+  entityId   String?
+  entityName String?
+  summary    String
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 model Horizon {
   id        String   @id @default(cuid())
   name      String

@@ -22,12 +22,19 @@ type Props = {
   horizons: HorizonRecord[];
   people: PersonRecord[];
   workstreams: string[];
+  canEdit: boolean;
 };
 
 const selectCls =
   "rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-700 focus:border-blue-500 focus:outline-none";
 
-export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
+export function TasksClient({
+  tasks,
+  horizons,
+  people,
+  workstreams,
+  canEdit,
+}: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
 
@@ -105,12 +112,14 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
             {filtered.length} of {tasks.length} items
           </p>
         </div>
-        <button
-          onClick={openNew}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-        >
-          <Plus size={16} /> New task
-        </button>
+        {canEdit && (
+          <button
+            onClick={openNew}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+          >
+            <Plus size={16} /> New task
+          </button>
+        )}
       </header>
 
       {/* Filters */}
@@ -229,7 +238,9 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
                     >
                       <button
                         aria-label="Toggle done"
+                        disabled={!canEdit}
                         onClick={() =>
+                          canEdit &&
                           startTransition(async () => {
                             await toggleTaskDone(t.id, !done);
                             refresh();
@@ -239,7 +250,7 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
                           done
                             ? "bg-emerald-500 border-emerald-500 text-white"
                             : "border-slate-300 hover:border-emerald-400"
-                        }`}
+                        } ${canEdit ? "" : "cursor-default opacity-80"}`}
                       >
                         {done && <Check size={14} />}
                       </button>
@@ -263,39 +274,51 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
                       </div>
                     </td>
                     <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
-                      <select
-                        className="rounded-md border border-transparent hover:border-slate-300 bg-transparent px-1 py-1 text-sm text-slate-700 focus:border-blue-500 focus:outline-none max-w-[150px]"
-                        value={t.ownerId ?? ""}
-                        onChange={(e) =>
-                          startTransition(async () => {
-                            await updateTask(t.id, {
-                              ownerId: e.target.value || null,
-                            });
-                            refresh();
-                          })
-                        }
-                      >
-                        <option value="">Unassigned</option>
-                        {people.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
+                      {canEdit ? (
+                        <select
+                          className="rounded-md border border-transparent hover:border-slate-300 bg-transparent px-1 py-1 text-sm text-slate-700 focus:border-blue-500 focus:outline-none max-w-[150px]"
+                          value={t.ownerId ?? ""}
+                          onChange={(e) =>
+                            startTransition(async () => {
+                              await updateTask(t.id, {
+                                ownerId: e.target.value || null,
+                              });
+                              refresh();
+                            })
+                          }
+                        >
+                          <option value="">Unassigned</option>
+                          {people.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-sm text-slate-700">
+                          {t.owner?.name ?? (
+                            <span className="text-slate-400">Unassigned</span>
+                          )}
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-3">
                       <PriorityBadge priority={t.priority} />
                     </td>
                     <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
-                      <StatusSelect
-                        value={t.status}
-                        onChange={(s) =>
-                          startTransition(async () => {
-                            await setTaskStatus(t.id, s);
-                            refresh();
-                          })
-                        }
-                      />
+                      {canEdit ? (
+                        <StatusSelect
+                          value={t.status}
+                          onChange={(s) =>
+                            startTransition(async () => {
+                              await setTaskStatus(t.id, s);
+                              refresh();
+                            })
+                          }
+                        />
+                      ) : (
+                        <StatusBadge status={t.status} />
+                      )}
                     </td>
                     <td className="px-3 py-3">
                       {t.horizonId ? (
@@ -344,6 +367,7 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
           key={selected?.id ?? "new"}
           task={selected}
           isNew={drawerNew}
+          canEdit={canEdit}
           horizons={horizons}
           people={people}
           workstreams={workstreams}
