@@ -1,7 +1,16 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
+
+export type ActionResult = { ok: true } | { ok: false; error: string };
+
+function isUniqueViolation(e: unknown): boolean {
+  return (
+    e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002"
+  );
+}
 
 function revalidateAll() {
   revalidatePath("/");
@@ -230,23 +239,53 @@ export async function createPerson(input: {
   name: string;
   title?: string | null;
   email?: string | null;
-}) {
-  await prisma.person.create({
-    data: {
-      name: input.name.trim(),
-      title: input.title ?? null,
-      email: input.email ?? null,
-    },
-  });
+}): Promise<ActionResult> {
+  const name = input.name.trim();
+  if (!name) return { ok: false, error: "Name is required." };
+  try {
+    await prisma.person.create({
+      data: {
+        name,
+        title: input.title ?? null,
+        email: input.email ?? null,
+      },
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return { ok: false, error: `An owner named "${name}" already exists.` };
+    }
+    throw e;
+  }
   revalidateAll();
+  return { ok: true };
 }
 
 export async function updatePerson(
   id: string,
   input: { name?: string; title?: string | null; email?: string | null },
-) {
-  await prisma.person.update({ where: { id }, data: input });
+): Promise<ActionResult> {
+  const data: { name?: string; title?: string | null; email?: string | null } =
+    {};
+  if (input.name !== undefined) {
+    const name = input.name.trim();
+    if (!name) return { ok: false, error: "Name is required." };
+    data.name = name;
+  }
+  if ("title" in input) data.title = input.title ?? null;
+  if ("email" in input) data.email = input.email ?? null;
+  try {
+    await prisma.person.update({ where: { id }, data });
+  } catch (e) {
+    if (isUniqueViolation(e)) {
+      return {
+        ok: false,
+        error: `An owner named "${data.name}" already exists.`,
+      };
+    }
+    throw e;
+  }
   revalidateAll();
+  return { ok: true };
 }
 
 export async function deletePerson(id: string) {

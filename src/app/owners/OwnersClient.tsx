@@ -38,7 +38,15 @@ export function OwnersClient({
   function add() {
     if (!name.trim()) return;
     startTransition(async () => {
-      await createPerson({ name, title: title || null, email: email || null });
+      const res = await createPerson({
+        name,
+        title: title || null,
+        email: email || null,
+      });
+      if (!res.ok) {
+        alert(res.error);
+        return;
+      }
       setName("");
       setTitle("");
       setEmail("");
@@ -227,11 +235,15 @@ function InlineEdit({
 
   function save() {
     startTransition(async () => {
-      await updatePerson(person.id, {
+      const res = await updatePerson(person.id, {
         name,
         title: title || null,
         email: email || null,
       });
+      if (!res.ok) {
+        alert(res.error);
+        return;
+      }
       onSaved();
     });
   }
