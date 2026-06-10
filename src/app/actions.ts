@@ -96,10 +96,16 @@ export async function updateTask(id: string, input: Partial<TaskInput>) {
     "source",
     "notes",
   ];
+  const required = new Set<keyof TaskInput>(["title", "workstream", "status"]);
   for (const k of keys) {
     if (k in input) {
       const v = input[k];
-      data[k] = v === "" ? null : v;
+      if (required.has(k)) {
+        // Non-nullable columns: only update when a non-empty value is provided.
+        if (v !== undefined && v !== null && v !== "") data[k] = v;
+      } else {
+        data[k] = v === "" ? null : v;
+      }
     }
   }
   if ("completion" in input && input.completion !== undefined) {
