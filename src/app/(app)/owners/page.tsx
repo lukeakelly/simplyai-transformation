@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
 import { DONE_STATUSES } from "@/lib/constants";
+import { getSession } from "@/lib/auth";
 import { OwnersClient } from "./OwnersClient";
 
 export const dynamic = "force-dynamic";
 
 export default async function OwnersPage() {
-  const [people, tasks] = await Promise.all([
+  const [people, tasks, session] = await Promise.all([
     prisma.person.findMany({ orderBy: { name: "asc" } }),
     prisma.task.findMany({
       select: {
@@ -15,6 +16,7 @@ export default async function OwnersPage() {
         completion: true,
       },
     }),
+    getSession(),
   ]);
 
   const summary = people.map((p) => {
@@ -41,5 +43,11 @@ export default async function OwnersPage() {
 
   const unassigned = tasks.filter((t) => !t.ownerId).length;
 
-  return <OwnersClient summary={summary} unassigned={unassigned} />;
+  return (
+    <OwnersClient
+      summary={summary}
+      unassigned={unassigned}
+      canEdit={session?.canEdit ?? false}
+    />
+  );
 }

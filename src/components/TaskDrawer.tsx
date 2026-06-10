@@ -23,6 +23,7 @@ import type {
 type Props = {
   task: TaskWithRelations | null;
   isNew: boolean;
+  canEdit: boolean;
   horizons: HorizonRecord[];
   people: PersonRecord[];
   workstreams: string[];
@@ -98,6 +99,7 @@ const inputCls =
 export function TaskDrawer({
   task,
   isNew,
+  canEdit,
   horizons,
   people,
   workstreams,
@@ -177,7 +179,7 @@ export function TaskDrawer({
           </button>
         </div>
 
-        <div className="px-6 py-5 space-y-5 flex-1">
+        <fieldset disabled={!canEdit} className="px-6 py-5 space-y-5 flex-1">
           <div>
             <label className={labelCls}>Title *</label>
             <input
@@ -416,36 +418,50 @@ export function TaskDrawer({
             value={form.notes}
             onChange={(v) => set("notes", v)}
           />
-        </div>
+        </fieldset>
 
         <div className="sticky bottom-0 bg-white border-t border-slate-200 px-6 py-4 flex items-center justify-between">
-          {!isNew ? (
-            <button
-              onClick={handleDelete}
-              disabled={pending}
-              className="inline-flex items-center gap-1.5 text-sm text-red-600 hover:text-red-700 font-medium disabled:opacity-50"
-            >
-              <Trash2 size={16} /> Delete
-            </button>
+          {canEdit ? (
+            <>
+              {!isNew ? (
+                <button
+                  onClick={handleDelete}
+                  disabled={pending}
+                  className="inline-flex items-center gap-1.5 text-sm text-red-600 hover:text-red-700 font-medium disabled:opacity-50"
+                >
+                  <Trash2 size={16} /> Delete
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={onClose}
+                  className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={pending || !form.title.trim()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  <Save size={16} />
+                  {pending ? "Saving\u2026" : isNew ? "Create task" : "Save changes"}
+                </button>
+              </div>
+            </>
           ) : (
-            <span />
+            <>
+              <span />
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </>
           )}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={pending || !form.title.trim()}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              <Save size={16} />
-              {pending ? "Saving\u2026" : isNew ? "Create task" : "Save changes"}
-            </button>
-          </div>
         </div>
       </div>
     </div>
