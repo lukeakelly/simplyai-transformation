@@ -3,7 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
-import { requireEditor } from "@/lib/auth";
+import { requireEditor, getSession } from "@/lib/auth";
 import { logAudit } from "@/lib/audit";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -44,6 +44,7 @@ export type TaskInput = {
   evidence?: string | null;
   doneCriteria?: string | null;
   source?: string | null;
+  origin?: string | null;
   notes?: string | null;
 };
 
@@ -76,6 +77,7 @@ export async function createTask(input: TaskInput) {
       evidence: input.evidence ?? null,
       doneCriteria: input.doneCriteria ?? null,
       source: input.source ?? null,
+      origin: input.origin || "Transformation Plan (only)",
       notes: input.notes ?? null,
       position: count,
     },
@@ -115,9 +117,15 @@ export async function updateTask(id: string, input: Partial<TaskInput>) {
     "evidence",
     "doneCriteria",
     "source",
+    "origin",
     "notes",
   ];
-  const required = new Set<keyof TaskInput>(["title", "workstream", "status"]);
+  const required = new Set<keyof TaskInput>([
+    "title",
+    "workstream",
+    "status",
+    "origin",
+  ]);
   for (const k of keys) {
     if (k in input) {
       const v = input[k];
@@ -195,6 +203,44 @@ export async function deleteTask(id: string) {
     summary: `Deleted task "${deleted.title}"`,
   });
   revalidateAll();
+}
+
+/**
+ * Add a comment to a task. Available to every authenticated user, including
+ * read-only reviewers — this is the one mutation a Viewer is allowed to make.
+ */
+export async function addComment(
+  taskId: string,
+  authorName: string,
+  body: string,
+): Promise<ActionResult> {
+  const session = await getSession();
+  if (!session) return { ok: false, error: "Not authenticated." };
+
+  const name = authorName.trim();
+  const text = body.trim();
+  if (!name) return { ok: false, error: "Please add your name." };
+  if (!text) return { ok: false, error: "Please enter a comment." };
+
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    select: { id: true, title: true },
+  });
+  if (!task) return { ok: false, error: "Task not found." };
+
+  await prisma.comment.create({
+    data: { taskId, authorName: name, body: text },
+  });
+  await logAudit({
+    actorRole: session.role,
+    action: "commented",
+    entityType: "task",
+    entityId: task.id,
+    entityName: task.title,
+    summary: `${name} commented on "${task.title}"`,
+  });
+  revalidateAll();
+  return { ok: true };
 }
 
 export async function moveTaskToHorizon(

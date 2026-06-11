@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Search, Check } from "lucide-react";
-import { StatusBadge, PriorityBadge, Pill } from "@/components/Badges";
+import { StatusBadge, PriorityBadge, Pill, OriginBadge } from "@/components/Badges";
 import { TaskDrawer } from "@/components/TaskDrawer";
 import { STATUSES, PRIORITIES, DONE_STATUSES } from "@/lib/constants";
 import {
@@ -44,6 +44,7 @@ export function TasksClient({
   const [fPriority, setFPriority] = useState("");
   const [fHorizon, setFHorizon] = useState("");
   const [fOwner, setFOwner] = useState("");
+  const [fOrigin, setFOrigin] = useState("");
   const [hideDone, setHideDone] = useState(false);
 
   const [selected, setSelected] = useState<TaskWithRelations | null>(null);
@@ -64,6 +65,7 @@ export function TasksClient({
       if (fPriority && t.priority !== fPriority) return false;
       if (fHorizon && (t.horizonId ?? "") !== fHorizon) return false;
       if (fOwner && (t.ownerId ?? "") !== fOwner) return false;
+      if (fOrigin && t.origin !== fOrigin) return false;
       if (hideDone && DONE_STATUSES.has(t.status)) return false;
       return true;
     });
@@ -75,6 +77,7 @@ export function TasksClient({
     fPriority,
     fHorizon,
     fOwner,
+    fOrigin,
     hideDone,
   ]);
 
@@ -196,6 +199,18 @@ export function TasksClient({
             </option>
           ))}
         </select>
+        <select
+          className={selectCls}
+          value={fOrigin}
+          onChange={(e) => setFOrigin(e.target.value)}
+          title="Filter by source"
+        >
+          <option value="">Dora + Transformation</option>
+          <option value="Dora">Dora only</option>
+          <option value="Transformation Plan (only)">
+            Transformation Plan (only)
+          </option>
+        </select>
         <label className="flex items-center gap-1.5 text-sm text-slate-600 ml-1">
           <input
             type="checkbox"
@@ -268,9 +283,18 @@ export function TasksClient({
                       >
                         {t.title}
                       </div>
-                      <div className="text-xs text-slate-400 mt-0.5">
-                        {t.workstream}
-                        {t.category ? ` \u00b7 ${t.category}` : ""}
+                      <div className="flex items-center gap-2 mt-1">
+                        {t.origin === "Dora" && <OriginBadge origin={t.origin} />}
+                        <span className="text-xs text-slate-400">
+                          {t.workstream}
+                          {t.category ? ` \u00b7 ${t.category}` : ""}
+                        </span>
+                        {t.comments.length > 0 && (
+                          <span className="text-xs text-slate-400">
+                            {"\u00b7"} {t.comments.length} comment
+                            {t.comments.length === 1 ? "" : "s"}
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
@@ -376,6 +400,7 @@ export function TasksClient({
             closeDrawer();
             refresh();
           }}
+          onCommented={refresh}
         />
       )}
     </div>
