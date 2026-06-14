@@ -26,6 +26,7 @@ type Props = {
   task: TaskWithRelations | null;
   isNew: boolean;
   canEdit: boolean;
+  currentUserName: string;
   horizons: HorizonRecord[];
   people: PersonRecord[];
   workstreams: string[];
@@ -126,6 +127,7 @@ export function TaskDrawer({
   task,
   isNew,
   canEdit,
+  currentUserName,
   horizons,
   people,
   workstreams,
@@ -141,7 +143,6 @@ export function TaskDrawer({
   const [comments, setComments] = useState<CommentRecord[]>(
     () => (task?.comments as CommentRecord[] | undefined) ?? [],
   );
-  const [commentName, setCommentName] = useState("");
   const [commentBody, setCommentBody] = useState("");
   const [commentError, setCommentError] = useState<string | null>(null);
   const [commentPending, startComment] = useTransition();
@@ -149,18 +150,13 @@ export function TaskDrawer({
   function handleAddComment() {
     if (!task) return;
     setCommentError(null);
-    if (!commentName.trim()) {
-      setCommentError("Please add your name.");
-      return;
-    }
     if (!commentBody.trim()) {
       setCommentError("Please enter a comment.");
       return;
     }
-    const name = commentName.trim();
     const body = commentBody.trim();
     startComment(async () => {
-      const res = await addComment(task.id, name, body);
+      const res = await addComment(task.id, body);
       if (!res.ok) {
         setCommentError(res.error);
         return;
@@ -169,7 +165,7 @@ export function TaskDrawer({
         ...prev,
         {
           id: `tmp-${Date.now()}`,
-          authorName: name,
+          authorName: currentUserName,
           body,
           createdAt: new Date(),
         },
@@ -542,12 +538,6 @@ export function TaskDrawer({
             )}
 
             <div className="rounded-lg border border-slate-200 p-3 space-y-2.5">
-              <input
-                className={inputCls}
-                value={commentName}
-                onChange={(e) => setCommentName(e.target.value)}
-                placeholder="Your name"
-              />
               <textarea
                 className={`${inputCls} min-h-[72px] resize-y`}
                 value={commentBody}
@@ -559,7 +549,11 @@ export function TaskDrawer({
               )}
               <div className="flex items-center justify-between">
                 <span className="text-xs text-slate-400">
-                  Your name and the date/time are recorded automatically.
+                  Commenting as{" "}
+                  <span className="font-medium text-slate-600">
+                    {currentUserName}
+                  </span>
+                  . The date/time is recorded automatically.
                 </span>
                 <button
                   onClick={handleAddComment}

@@ -10,6 +10,7 @@ import {
   Menu,
   X,
   ScrollText,
+  UserCog,
   LogOut,
   Eye,
   ShieldCheck,
@@ -40,7 +41,11 @@ export function Sidebar({
   const [open, setOpen] = useState(false);
 
   const nav = adminView
-    ? [...BASE_NAV, { href: "/activity", label: "Activity", icon: ScrollText }]
+    ? [
+        ...BASE_NAV,
+        { href: "/users", label: "Users", icon: UserCog },
+        { href: "/activity", label: "Activity", icon: ScrollText },
+      ]
     : BASE_NAV;
 
   return (

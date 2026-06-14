@@ -21,20 +21,21 @@ function genPassword(len = 12): string {
 
 type Account = {
   username: string;
+  name: string;
   role: string;
   permission: "editor" | "viewer";
   isAdmin: boolean;
 };
 
 const ACCOUNTS: Account[] = [
-  { username: "ceo", role: "CEO", permission: "editor", isAdmin: false },
-  { username: "coo", role: "COO", permission: "editor", isAdmin: true },
-  { username: "cfo", role: "CFO", permission: "editor", isAdmin: false },
-  { username: "cro", role: "CRO", permission: "editor", isAdmin: false },
-  { username: "cto", role: "CTO", permission: "editor", isAdmin: false },
-  { username: "cino", role: "CInO", permission: "editor", isAdmin: false },
-  { username: "ctro", role: "CTRO", permission: "editor", isAdmin: false },
-  { username: "viewer", role: "Viewer", permission: "viewer", isAdmin: false },
+  { username: "ceo", name: "Jason", role: "CEO", permission: "editor", isAdmin: false },
+  { username: "coo", name: "Luke", role: "COO", permission: "editor", isAdmin: true },
+  { username: "cfo", name: "Wayne", role: "CFO", permission: "editor", isAdmin: false },
+  { username: "cro", name: "CRO", role: "CRO", permission: "editor", isAdmin: false },
+  { username: "cto", name: "CTO", role: "CTO", permission: "editor", isAdmin: false },
+  { username: "cino", name: "Gina", role: "CInO", permission: "editor", isAdmin: false },
+  { username: "ctro", name: "Kylie", role: "CTRO", permission: "editor", isAdmin: false },
+  { username: "viewer", name: "Reviewer", role: "Viewer", permission: "viewer", isAdmin: false },
 ];
 
 async function main() {
@@ -47,13 +48,15 @@ async function main() {
     });
 
     if (existing) {
-      // Keep existing password; only refresh role metadata.
+      // Keep existing password; only refresh role metadata. Backfill the
+      // display name only when it is missing so admin edits are preserved.
       await prisma.user.update({
         where: { username: acc.username },
         data: {
           role: acc.role,
           permission: acc.permission,
           isAdmin: acc.isAdmin,
+          ...(existing.name ? {} : { name: acc.name }),
         },
       });
       rows.push({
@@ -69,6 +72,7 @@ async function main() {
     await prisma.user.create({
       data: {
         username: acc.username,
+        name: acc.name,
         passwordHash: hashPassword(password),
         role: acc.role,
         permission: acc.permission,

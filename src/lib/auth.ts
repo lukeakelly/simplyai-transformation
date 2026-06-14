@@ -16,6 +16,7 @@ export type Mode = "admin" | "coo";
 export type Session = {
   userId: string;
   username: string;
+  name: string;
   role: string;
   permission: "editor" | "viewer";
   isAdmin: boolean;
@@ -89,6 +90,7 @@ export async function getSession(): Promise<Session | null> {
   return {
     userId: user.id,
     username: user.username,
+    name: user.name,
     role: user.role,
     permission,
     isAdmin: user.isAdmin,
@@ -120,6 +122,16 @@ export async function requireEditor(): Promise<Session> {
   if (!session) throw new Error("Not authenticated.");
   if (!session.canEdit) {
     throw new Error("Your role has read-only access and cannot make changes.");
+  }
+  return session;
+}
+
+/** Throws unless the user is an admin acting in admin mode. Returns the session. */
+export async function requireAdmin(): Promise<Session> {
+  const session = await getSession();
+  if (!session) throw new Error("Not authenticated.");
+  if (!session.adminView) {
+    throw new Error("Admin tools are required for this action.");
   }
   return session;
 }

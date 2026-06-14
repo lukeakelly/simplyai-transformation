@@ -23,6 +23,7 @@ type Props = {
   people: PersonRecord[];
   workstreams: string[];
   canEdit: boolean;
+  currentUserName: string;
 };
 
 const selectCls =
@@ -34,6 +35,7 @@ export function TasksClient({
   people,
   workstreams,
   canEdit,
+  currentUserName,
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -392,6 +394,7 @@ export function TasksClient({
           task={selected}
           isNew={drawerNew}
           canEdit={canEdit}
+          currentUserName={currentUserName}
           horizons={horizons}
           people={people}
           workstreams={workstreams}

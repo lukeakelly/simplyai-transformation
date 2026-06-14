@@ -208,19 +208,20 @@ export async function deleteTask(id: string) {
 /**
  * Add a comment to a task. Available to every authenticated user, including
  * read-only reviewers — this is the one mutation a Viewer is allowed to make.
+ * The comment is attributed to the logged-in user's account, so it is always
+ * traceable back to a real, unique person.
  */
 export async function addComment(
   taskId: string,
-  authorName: string,
   body: string,
 ): Promise<ActionResult> {
   const session = await getSession();
   if (!session) return { ok: false, error: "Not authenticated." };
 
-  const name = authorName.trim();
   const text = body.trim();
-  if (!name) return { ok: false, error: "Please add your name." };
   if (!text) return { ok: false, error: "Please enter a comment." };
+
+  const author = session.name?.trim() || session.username;
 
   const task = await prisma.task.findUnique({
     where: { id: taskId },
@@ -229,7 +230,7 @@ export async function addComment(
   if (!task) return { ok: false, error: "Task not found." };
 
   await prisma.comment.create({
-    data: { taskId, authorName: name, body: text },
+    data: { taskId, userId: session.userId, authorName: author, body: text },
   });
   await logAudit({
     actorRole: session.role,
@@ -237,7 +238,7 @@ export async function addComment(
     entityType: "task",
     entityId: task.id,
     entityName: task.title,
-    summary: `${name} commented on "${task.title}"`,
+    summary: `${author} (${session.role}) commented on "${task.title}"`,
   });
   revalidateAll();
   return { ok: true };
