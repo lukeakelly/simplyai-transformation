@@ -12,7 +12,12 @@ export async function getPeople() {
 export async function getTasks() {
   return prisma.task.findMany({
     orderBy: [{ horizonId: "asc" }, { position: "asc" }],
-    include: { owner: true, accountable: true, horizon: true },
+    include: {
+      owner: true,
+      accountable: true,
+      horizon: true,
+      comments: { orderBy: { createdAt: "asc" } },
+    },
   });
 }
 

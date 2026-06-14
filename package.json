@@ -9,7 +9,9 @@
     "lint": "eslint",
     "postinstall": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
-    "db:seed-users": "tsx prisma/seed-users.ts"
+    "db:seed-users": "tsx prisma/seed-users.ts",
+    "db:add-dora-tasks": "tsx prisma/add-dora-tasks.ts",
+    "db:rotate-passwords": "tsx prisma/rotate-passwords.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

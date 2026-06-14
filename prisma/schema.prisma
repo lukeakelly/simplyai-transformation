@@ -11,10 +11,12 @@ datasource db {
 model User {
   id           String   @id @default(cuid())
   username     String   @unique
+  name         String   @default("")
   passwordHash String
   role         String
   permission   String   @default("editor")
   isAdmin      Boolean  @default(false)
+  comments     Comment[]
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
@@ -84,12 +86,28 @@ model Task {
   evidence        String?
   doneCriteria    String?
   source          String?
+  origin          String    @default("Transformation Plan (only)")
   notes           String?
   position        Int       @default(0)
+  comments        Comment[]
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   @@index([horizonId])
   @@index([workstream])
   @@index([status])
+  @@index([origin])
+}
+
+model Comment {
+  id         String   @id @default(cuid())
+  taskId     String
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  authorName String
+  body       String
+  createdAt  DateTime @default(now())
+
+  @@index([taskId])
 }

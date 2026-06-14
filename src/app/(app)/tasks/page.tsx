@@ -23,6 +23,7 @@ export default async function TasksPage() {
       people={people}
       workstreams={workstreams}
       canEdit={session?.canEdit ?? false}
+      currentUserName={session?.name?.trim() || session?.username || "You"}
     />
   );
 }

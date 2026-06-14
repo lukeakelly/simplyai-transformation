@@ -138,6 +138,9 @@ async function main() {
         evidence: t.evidence,
         doneCriteria: t.doneCriteria,
         source: t.source,
+        origin: (t.source ?? "").toLowerCase().includes("dora")
+          ? "Dora"
+          : "Transformation Plan (only)",
         notes: t.notes,
         position,
       },
