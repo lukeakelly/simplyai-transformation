@@ -13,6 +13,22 @@ export type AskResult =
 const MODEL = "gpt-4o-mini";
 const MAX_HISTORY = 10;
 const MAX_QUESTION_LEN = 2000;
+const MAX_OUTPUT_TOKENS = 800;
+
+/** History comes from the client, so validate its shape before trusting it. */
+function sanitizeHistory(history: ChatMessage[]): ChatMessage[] {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter(
+      (m): m is ChatMessage =>
+        !!m &&
+        (m.role === "user" || m.role === "assistant") &&
+        typeof m.content === "string" &&
+        m.content.trim().length > 0,
+    )
+    .slice(-MAX_HISTORY)
+    .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_QUESTION_LEN) }));
+}
 
 export async function askAssistant(
   question: string,
@@ -43,10 +59,7 @@ export async function askAssistant(
       role: "system" as const,
       content: `Programme snapshot (JSON, source of truth):\n${context}`,
     },
-    ...history.slice(-MAX_HISTORY).map((m) => ({
-      role: m.role,
-      content: m.content,
-    })),
+    ...sanitizeHistory(history),
     { role: "user" as const, content: trimmed },
   ];
 
@@ -62,6 +75,7 @@ export async function askAssistant(
         model: MODEL,
         messages,
         temperature: 0.2,
+        max_tokens: MAX_OUTPUT_TOKENS,
       }),
     });
 
