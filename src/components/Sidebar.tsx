@@ -7,6 +7,7 @@ import {
   ListChecks,
   CalendarRange,
   Users,
+  Sparkles,
   Menu,
   X,
   ScrollText,
@@ -24,6 +25,7 @@ const BASE_NAV = [
   { href: "/tasks", label: "Tasks", icon: ListChecks },
   { href: "/timeline", label: "Timeline", icon: CalendarRange },
   { href: "/owners", label: "Owners", icon: Users },
+  { href: "/ask", label: "Ask", icon: Sparkles },
 ];
 
 export function Sidebar({
