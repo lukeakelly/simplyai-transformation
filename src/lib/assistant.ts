@@ -24,20 +24,37 @@ export async function buildAssistantContext(): Promise<string> {
       ? 0
       : Math.round(tasks.reduce((s, t) => s + t.completion, 0) / total);
 
-  const countBy = (key: (t: (typeof tasks)[number]) => string) => {
-    const out: Record<string, number> = {};
+  // Group tasks by a key and pre-compute count / done / average completion so
+  // the model never has to derive these numbers itself (it gets them wrong).
+  const groupStats = (key: (t: (typeof tasks)[number]) => string) => {
+    const acc: Record<string, { count: number; done: number; sum: number }> =
+      {};
     for (const t of tasks) {
       const k = key(t);
-      out[k] = (out[k] ?? 0) + 1;
+      const g = (acc[k] ??= { count: 0, done: 0, sum: 0 });
+      g.count += 1;
+      g.sum += t.completion;
+      if (DONE_STATUSES.has(t.status)) g.done += 1;
+    }
+    const out: Record<
+      string,
+      { count: number; done: number; avgCompletion: number }
+    > = {};
+    for (const [k, g] of Object.entries(acc)) {
+      out[k] = {
+        count: g.count,
+        done: g.done,
+        avgCompletion: Math.round(g.sum / g.count),
+      };
     }
     return out;
   };
 
-  const byStatus = countBy((t) => t.status);
-  const byPriority = countBy((t) => t.priority ?? "Unspecified");
-  const byWorkstream = countBy((t) => t.workstream);
-  const byHorizon = countBy((t) => t.horizon?.name ?? "Unscheduled");
-  const byOrigin = countBy((t) => t.origin);
+  const byStatus = groupStats((t) => t.status);
+  const byPriority = groupStats((t) => t.priority ?? "Unspecified");
+  const byWorkstream = groupStats((t) => t.workstream);
+  const byHorizon = groupStats((t) => t.horizon?.name ?? "Unscheduled");
+  const bySource = groupStats((t) => t.origin);
 
   // Per-owner aggregates (by owner name).
   type OwnerStat = {
@@ -108,11 +125,13 @@ export async function buildAssistantContext(): Promise<string> {
       doneStatuses: [...DONE_STATUSES],
       peopleCount: people.length,
     },
+    statGroupsNote:
+      "Each group below maps a key to { count, done, avgCompletion } — use these directly; do not recompute.",
     byStatus,
     byPriority,
     byWorkstream,
     byHorizon,
-    bySource: byOrigin,
+    bySource,
     horizonsInOrder: horizons.map((h) => h.name),
     ownerStats,
     tasks: taskRows,
@@ -128,11 +147,11 @@ You answer questions about the transformation programme using ONLY the JSON snap
 Rules:
 - Base every answer strictly on the snapshot. Never invent tasks, people, numbers, owners, or statuses.
 - If the snapshot does not contain the answer, say so plainly and suggest what the user could ask instead.
-- For quantitative questions, prefer the pre-computed aggregates (summary, byStatus, byPriority, byWorkstream, byHorizon, ownerStats) — they are authoritative. ownerStats[].avgCompletion is the average completion percent across the tasks that person owns; .done counts tasks in a done status (${[
+- For quantitative questions, ALWAYS use the pre-computed aggregates — never recompute counts or averages yourself from the task list, as that is error-prone. The authoritative aggregates are: summary; the grouped stats byStatus, byPriority, byWorkstream, byHorizon, bySource (each maps a key to { count, done, avgCompletion }); and ownerStats. A done task is one in a done status (${[
   ...DONE_STATUSES,
 ].join(", ")}).
-- "% complete" for a person means ownerStats.avgCompletion unless the user clearly means the share of their tasks that are done.
-- "source"/"Dora" refers to the task.source field ("Dora" vs "Transformation Plan (only)").
+- "% complete" of a group or person means that group/person's avgCompletion from the aggregates (e.g. bySource["Dora"].avgCompletion for Dora completion; ownerStats[].avgCompletion for a person) unless the user clearly means the share of tasks that are done.
+- "source"/"Dora" refers to the task.source field ("Dora" vs "Transformation Plan (only)"); use bySource for its count/avgCompletion.
 - Be concise and concrete. Use short paragraphs or bullet points. When listing tasks, include the id and title, and relevant fields (owner, status, completion, horizon).
 - When a person is referenced by a name that maps to a role (e.g. Jason=CEO, Luke=COO, Wayne=CFO, Gina=CInO, Kylie=CTRO), match against the owner names in the snapshot, which may be role labels or person names.
 - Format numbers as given (completion values are percentages 0-100).
