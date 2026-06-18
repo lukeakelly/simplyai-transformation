@@ -54,6 +54,12 @@ export async function getDashboardStats() {
     DONE_STATUSES.has(t.status),
   ).length;
 
+  const dora = tasks.filter((t) => t.origin === "Dora");
+  const doraCompletion =
+    dora.length === 0
+      ? 0
+      : Math.round(dora.reduce((s, t) => s + t.completion, 0) / dora.length);
+
   return {
     total,
     completion,
@@ -63,6 +69,8 @@ export async function getDashboardStats() {
     atRisk,
     criticalTotal: criticalPath.length,
     criticalDone,
+    doraTotal: dora.length,
+    doraCompletion,
     byStatus,
     byPriority,
     byWorkstream,

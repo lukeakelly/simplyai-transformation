@@ -24,6 +24,8 @@ type Props = {
   workstreams: string[];
   canEdit: boolean;
   currentUserName: string;
+  initialPriority?: string;
+  initialOrigin?: string;
 };
 
 const selectCls =
@@ -36,6 +38,8 @@ export function TasksClient({
   workstreams,
   canEdit,
   currentUserName,
+  initialPriority = "",
+  initialOrigin = "",
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -43,10 +47,10 @@ export function TasksClient({
   const [search, setSearch] = useState("");
   const [fWorkstream, setFWorkstream] = useState("");
   const [fStatus, setFStatus] = useState("");
-  const [fPriority, setFPriority] = useState("");
+  const [fPriority, setFPriority] = useState(initialPriority);
   const [fHorizon, setFHorizon] = useState("");
   const [fOwner, setFOwner] = useState("");
-  const [fOrigin, setFOrigin] = useState("");
+  const [fOrigin, setFOrigin] = useState(initialOrigin);
   const [hideDone, setHideDone] = useState(false);
 
   const [selected, setSelected] = useState<TaskWithRelations | null>(null);

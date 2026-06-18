@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getDashboardStats, getHorizons } from "@/lib/data";
 import { STATUS_COLORS, PRIORITY_COLORS } from "@/lib/constants";
 import {
@@ -7,6 +8,9 @@ import {
   AlertTriangle,
   Target,
   ListChecks,
+  Sparkles,
+  Zap,
+  ChevronRight,
 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +37,50 @@ function StatCard({
       <div className="mt-2 text-3xl font-bold text-slate-900">{value}</div>
       {sub && <div className="mt-1 text-xs text-slate-400">{sub}</div>}
     </div>
+  );
+}
+
+function FilterTile({
+  label,
+  value,
+  sub,
+  href,
+  icon: Icon,
+  iconClass,
+  ring,
+}: {
+  label: string;
+  value: string | number;
+  sub: string;
+  href: string;
+  icon: React.ComponentType<{ size?: number; className?: string }>;
+  iconClass: string;
+  ring: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className={`group flex items-center justify-between gap-4 rounded-xl border bg-white p-5 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 ${ring}`}
+    >
+      <div className="flex items-center gap-4">
+        <span
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${iconClass}`}
+        >
+          <Icon size={20} />
+        </span>
+        <div>
+          <div className="text-sm font-semibold text-slate-700">{label}</div>
+          <div className="mt-0.5 text-3xl font-bold text-slate-900">
+            {value}
+          </div>
+          <div className="mt-0.5 text-xs text-slate-400">{sub}</div>
+        </div>
+      </div>
+      <span className="flex items-center gap-1 text-xs font-medium text-slate-400 group-hover:text-slate-600">
+        View
+        <ChevronRight size={16} />
+      </span>
+    </Link>
   );
 }
 
@@ -139,6 +187,28 @@ export default async function DashboardPage() {
             value={stats.atRisk}
             icon={AlertTriangle}
             accent="text-orange-500"
+          />
+        </div>
+
+        {/* Focused, clickable views */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <FilterTile
+            label="Dora items"
+            value={stats.doraTotal}
+            sub={`${stats.doraCompletion}% avg. completion \u00b7 from Project Dora`}
+            href="/tasks?origin=Dora"
+            icon={Sparkles}
+            iconClass="bg-purple-100 text-purple-600"
+            ring="border-purple-200"
+          />
+          <FilterTile
+            label="Critical path"
+            value={stats.criticalTotal}
+            sub={`${stats.criticalDone} of ${stats.criticalTotal} complete \u00b7 highest priority`}
+            href="/tasks?priority=Critical+Path"
+            icon={Zap}
+            iconClass="bg-red-100 text-red-600"
+            ring="border-red-200"
           />
         </div>
 
