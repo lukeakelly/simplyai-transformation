@@ -53,8 +53,16 @@ export async function getDashboardStats() {
   const criticalDone = criticalPath.filter((t) =>
     DONE_STATUSES.has(t.status),
   ).length;
+  const criticalCompletion =
+    criticalPath.length === 0
+      ? 0
+      : Math.round(
+          criticalPath.reduce((s, t) => s + t.completion, 0) /
+            criticalPath.length,
+        );
 
   const dora = tasks.filter((t) => t.origin === "Dora");
+  const doraDone = dora.filter((t) => DONE_STATUSES.has(t.status)).length;
   const doraCompletion =
     dora.length === 0
       ? 0
@@ -69,7 +77,9 @@ export async function getDashboardStats() {
     atRisk,
     criticalTotal: criticalPath.length,
     criticalDone,
+    criticalCompletion,
     doraTotal: dora.length,
+    doraDone,
     doraCompletion,
     byStatus,
     byPriority,

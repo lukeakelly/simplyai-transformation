@@ -43,37 +43,50 @@ function StatCard({
 function FilterTile({
   label,
   value,
+  pct,
   sub,
   href,
   icon: Icon,
   iconClass,
   ring,
+  barClass,
 }: {
   label: string;
   value: string | number;
+  pct: number;
   sub: string;
   href: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
   iconClass: string;
   ring: string;
+  barClass: string;
 }) {
   return (
     <Link
       href={href}
       className={`group flex items-center justify-between gap-4 rounded-xl border bg-white p-5 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 ${ring}`}
     >
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 min-w-0">
         <span
           className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${iconClass}`}
         >
           <Icon size={20} />
         </span>
-        <div>
+        <div className="min-w-0">
           <div className="text-sm font-semibold text-slate-700">{label}</div>
-          <div className="mt-0.5 text-3xl font-bold text-slate-900">
-            {value}
+          <div className="mt-0.5 flex items-baseline gap-2">
+            <span className="text-3xl font-bold text-slate-900">{value}</span>
+            <span className="text-sm font-semibold text-slate-500">
+              {pct}% complete
+            </span>
           </div>
-          <div className="mt-0.5 text-xs text-slate-400">{sub}</div>
+          <div className="mt-1.5 h-1.5 w-40 max-w-full rounded-full bg-slate-100 overflow-hidden">
+            <div
+              className={`h-full rounded-full ${barClass}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div className="mt-1 text-xs text-slate-400">{sub}</div>
         </div>
       </div>
       <span className="flex items-center gap-1 text-xs font-medium text-slate-400 group-hover:text-slate-600">
@@ -195,20 +208,24 @@ export default async function DashboardPage() {
           <FilterTile
             label="Dora items"
             value={stats.doraTotal}
-            sub={`${stats.doraCompletion}% avg. completion \u00b7 from Project Dora`}
+            pct={stats.doraCompletion}
+            sub={`${stats.doraDone} done \u00b7 from Project Dora`}
             href="/tasks?origin=Dora"
             icon={Sparkles}
             iconClass="bg-purple-100 text-purple-600"
             ring="border-purple-200"
+            barClass="bg-purple-500"
           />
           <FilterTile
             label="Critical path"
             value={stats.criticalTotal}
-            sub={`${stats.criticalDone} of ${stats.criticalTotal} complete \u00b7 highest priority`}
+            pct={stats.criticalCompletion}
+            sub={`${stats.criticalDone} of ${stats.criticalTotal} done \u00b7 highest priority`}
             href="/tasks?priority=Critical+Path"
             icon={Zap}
             iconClass="bg-red-100 text-red-600"
             ring="border-red-200"
+            barClass="bg-red-500"
           />
         </div>
 
