@@ -1,5 +1,5 @@
 {
+  "framework": null,
   "buildCommand": "cd game && npm install && npm run build",
-  "outputDirectory": "game/dist",
-  "installCommand": "echo 'skip root install'"
+  "outputDirectory": "game/dist"
 }
