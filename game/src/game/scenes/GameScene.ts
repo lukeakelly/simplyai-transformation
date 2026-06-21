@@ -1468,6 +1468,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private showPauseMenu() {
+    // Zones inside containers with setScrollFactor(0) have misaligned hit areas
+    // (Phaser hit-tests in world space). Keep visuals in the container but add
+    // interactive zones directly to the scene with their own scrollFactor(0).
+    const zones: Phaser.GameObjects.Zone[] = [];
     const c = this.add.container(0, 0).setScrollFactor(0).setDepth(60);
     this.pauseOverlay = c;
 
@@ -1486,6 +1490,8 @@ export class GameScene extends Phaser.Scene {
       fontSize: '30px', fontFamily: 'system-ui, Arial, sans-serif', fontStyle: 'bold', color: '#00d4ff',
     }).setOrigin(0.5));
 
+    const destroyAll = () => { zones.forEach(z => z.destroy()); };
+
     const mkBtn = (y: number, lbl: string, col: number, bgc: number, fn: () => void) => {
       const bg2 = this.add.graphics();
       bg2.fillStyle(bgc, 0.9); bg2.fillRoundedRect(GAME_WIDTH / 2 - 140, y - 20, 280, 40, 8);
@@ -1493,20 +1499,28 @@ export class GameScene extends Phaser.Scene {
       const t = this.add.text(GAME_WIDTH / 2, y, lbl, {
         fontSize: '16px', fontFamily: 'system-ui, Arial, sans-serif', fontStyle: 'bold', color: '#ffffff',
       }).setOrigin(0.5);
-      const z = this.add.zone(GAME_WIDTH / 2, y, 280, 40).setInteractive({ cursor: 'pointer' });
+      c.add([bg2, t]);
+      const z = this.add.zone(GAME_WIDTH / 2, y, 280, 40)
+        .setInteractive({ cursor: 'pointer' })
+        .setScrollFactor(0).setDepth(61);
       z.on('pointerdown', fn);
-      c.add([bg2, t, z]);
+      zones.push(z);
     };
-    mkBtn(GAME_HEIGHT / 2 - 80, 'Resume',        0x00d4ff, 0x003366, () => this.togglePause());
+    mkBtn(GAME_HEIGHT / 2 - 80, 'Resume',        0x00d4ff, 0x003366, () => { destroyAll(); this.togglePause(); });
     mkBtn(GAME_HEIGHT / 2 - 25, 'Mute: ' + (audioManager.isMuted() ? 'OFF' : 'ON'), 0x334455, 0x111122, () => audioManager.toggleMute());
-    mkBtn(GAME_HEIGHT / 2 + 30, 'Restart',       0x0066ff, 0x001133, () => { c.destroy(); this.paused = false; this.scene.restart(); });
-    mkBtn(GAME_HEIGHT / 2 + 85, 'Main Menu',     0x334455, 0x111122, () => { c.destroy(); this.paused = false; audioManager.stopMusic(); this.scene.start('MainMenu'); });
+    mkBtn(GAME_HEIGHT / 2 + 30, 'Restart',       0x0066ff, 0x001133, () => { destroyAll(); c.destroy(); this.paused = false; this.scene.restart(); });
+    mkBtn(GAME_HEIGHT / 2 + 85, 'Main Menu',     0x334455, 0x111122, () => { destroyAll(); c.destroy(); this.paused = false; audioManager.stopMusic(); this.scene.start('MainMenu'); });
+
+    c.once('destroy', destroyAll);
   }
 
   // ─── Tutorial ─────────────────────────────────────────────────────────────
 
   private showTutorial() {
     this.paused = true;
+    // Visuals inside the container (scrollFactor inherited from container).
+    // Interactive zone lives directly on the scene with its own scrollFactor(0)
+    // to ensure hit-testing uses screen coordinates, not world coordinates.
     const c = this.add.container(0, 0).setScrollFactor(0).setDepth(70);
 
     const bg = this.add.graphics();
@@ -1542,13 +1556,18 @@ export class GameScene extends Phaser.Scene {
     const bl = this.add.text(GAME_WIDTH / 2, btnY, "Let's go!", {
       fontSize: '18px', fontFamily: 'system-ui, Arial, sans-serif', fontStyle: 'bold', color: '#ffffff',
     }).setOrigin(0.5);
-    const bz = this.add.zone(GAME_WIDTH / 2, btnY, 260, 44).setInteractive({ cursor: 'pointer' });
+    c.add([b, bl]);
+
+    const bz = this.add.zone(GAME_WIDTH / 2, btnY, 260, 44)
+      .setInteractive({ cursor: 'pointer' })
+      .setScrollFactor(0).setDepth(71);
     bz.on('pointerdown', () => {
+      bz.destroy();
       c.destroy();
       this.paused = false;
-      localStorage.setItem(STORAGE_KEYS.TUTORIAL_SEEN, '1');
+      try { localStorage.setItem(STORAGE_KEYS.TUTORIAL_SEEN, '1'); } catch { /* ignore */ }
     });
-    c.add([b, bl, bz]);
+    c.once('destroy', () => { if (bz.active) bz.destroy(); });
   }
 
   // ─── Main Update ──────────────────────────────────────────────────────────
