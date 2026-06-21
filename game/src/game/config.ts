@@ -1,5 +1,7 @@
 export const GAME_WIDTH = 1280;
 export const GAME_HEIGHT = 720;
+export const WORLD_WIDTH = 2400;
+export const WORLD_HEIGHT = 1350;
 export const GAME_DURATION = 180; // seconds (3 minutes)
 export const SURGE_START = 30;    // final 30s
 export const COMBO_WINDOW_DEFAULT = 4000; // ms
