@@ -239,10 +239,10 @@ function buildExport(assignments: ResourceAssignment[], people: ResourcePerson[]
   return rows.map((row) => row.map((cell) => `"${cell.replaceAll("\"", "\"\"")}"`).join(",")).join("\n");
 }
 
-export function ResourceCommandCentreClient() {
+export function ResourceCommandCentreClient({ initialAssignments }: { initialAssignments?: ResourceAssignment[] }) {
   const [activeTab, setActiveTab] = useState<Tab>("centre");
   const [people, setPeople] = useState<ResourcePerson[]>(resourcePeople);
-  const [assignments, setAssignments] = useState<ResourceAssignment[]>(resourceAssignments);
+  const [assignments, setAssignments] = useState<ResourceAssignment[]>(initialAssignments ?? resourceAssignments);
   const [audit, setAudit] = useState<AuditEntry[]>(auditEntries);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>(resourceAssignments[0]?.id ?? "");
   const [selectedDemandId, setSelectedDemandId] = useState(resourceDemands[0]?.id ?? "");
