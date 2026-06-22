@@ -1,0 +1,1088 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import type { DragEvent } from "react";
+import {
+  AlertTriangle,
+  ArrowRightLeft,
+  Clock3,
+  Download,
+  FileSpreadsheet,
+  Filter,
+  Lock,
+  MessageSquare,
+  MousePointer2,
+  PanelRightOpen,
+  Search,
+  ShieldCheck,
+  Sparkles,
+  SplitSquareHorizontal,
+  UserCheck,
+} from "lucide-react";
+import {
+  TODAY,
+  addDays,
+  assignmentProject,
+  auditEntries,
+  businessDays,
+  formatDate,
+  migrationIssues,
+  money,
+  overlaps,
+  resourceAssignments,
+  resourceDemands,
+  resourcePeople,
+  resourceProjects,
+  type AssignmentStatus,
+  type AssignmentType,
+  type AuditEntry,
+  type ResourceAssignment,
+  type ResourceDemand,
+  type ResourcePerson,
+} from "@/lib/resource-command-data";
+
+type Tab = "centre" | "schedule" | "demand" | "people" | "bench" | "migration" | "approvals";
+type DragPayload = { kind: "assignment"; id: string } | { kind: "demand"; id: string };
+type ConflictDraft = {
+  demand: ResourceDemand;
+  person: ResourcePerson;
+  date: string;
+  availablePct: number;
+  bookedPct: number;
+  resultingPct: number;
+};
+
+type MatchResult = {
+  person: ResourcePerson;
+  score: number;
+  skillFit: number;
+  availabilityFit: number;
+  explanation: string[];
+};
+
+const tabs: { id: Tab; label: string }[] = [
+  { id: "centre", label: "Command Centre" },
+  { id: "schedule", label: "Schedule" },
+  { id: "demand", label: "Demand & Pipeline" },
+  { id: "people", label: "People & Skills" },
+  { id: "bench", label: "Bench" },
+  { id: "migration", label: "Migration Review" },
+  { id: "approvals", label: "Approvals & Audit" },
+];
+
+const typeClasses: Record<AssignmentType, string> = {
+  Billable: "bg-blue-900 text-white border-blue-950",
+  "Managed Service": "bg-teal-700 text-white border-teal-800",
+  Presales: "bg-purple-700 text-white border-purple-800",
+  "Business Development": "bg-violet-700 text-white border-violet-800",
+  Internal: "bg-cyan-600 text-white border-cyan-700",
+  Training: "bg-sky-200 text-sky-950 border-sky-300",
+  Leave: "bg-slate-300 text-slate-800 border-slate-400",
+  Bench: "bg-amber-100 text-amber-900 border-amber-300",
+};
+
+const statusClasses: Record<AssignmentStatus, string> = {
+  Confirmed: "border-solid",
+  Tentative: "border-dashed bg-opacity-80",
+  Requested: "border-dashed",
+  "Waiting List": "border-red-500 bg-[repeating-linear-gradient(45deg,rgba(239,68,68,.16),rgba(239,68,68,.16)_6px,transparent_6px,transparent_12px)]",
+  "At Risk": "border-red-500 ring-2 ring-red-200",
+};
+
+function pct(value: number) {
+  return `${Math.round(value)}%`;
+}
+
+function assignmentDurationDays(assignment: ResourceAssignment) {
+  const start = Date.parse(`${assignment.start}T00:00:00.000Z`);
+  const end = Date.parse(`${assignment.end}T00:00:00.000Z`);
+  return Math.max(0, Math.round((end - start) / 86400000));
+}
+
+function compactName(name: string) {
+  return name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+function getBookedPct(assignments: ResourceAssignment[], personId: string, date: string, includeLeave: boolean) {
+  return assignments
+    .filter((assignment) => assignment.personId === personId && overlaps(date, assignment))
+    .filter((assignment) => includeLeave || assignment.type !== "Leave")
+    .reduce((total, assignment) => total + assignment.allocationPct, 0);
+}
+
+function getLeavePct(assignments: ResourceAssignment[], personId: string, date: string) {
+  return assignments
+    .filter((assignment) => assignment.personId === personId && assignment.type === "Leave" && overlaps(date, assignment))
+    .reduce((total, assignment) => total + assignment.allocationPct, 0);
+}
+
+function getAvailablePct(assignments: ResourceAssignment[], personId: string, date: string) {
+  return Math.max(0, 100 - getLeavePct(assignments, personId, date));
+}
+
+function getAssignmentRevenue(assignment: ResourceAssignment) {
+  const person = resourcePeople.find((item) => item.id === assignment.personId);
+  if (!person || assignment.type === "Leave" || assignment.type === "Bench") return 0;
+  const days = assignmentDurationDays(assignment) + 1;
+  return days * person.billRate * (assignment.allocationPct / 100);
+}
+
+function getAssignmentMargin(assignment: ResourceAssignment) {
+  const person = resourcePeople.find((item) => item.id === assignment.personId);
+  if (!person || assignment.type === "Leave" || assignment.type === "Bench") return 0;
+  const days = assignmentDurationDays(assignment) + 1;
+  return days * (person.billRate - person.costRate) * (assignment.allocationPct / 100);
+}
+
+function matchCandidates(demand: ResourceDemand, assignments: ResourceAssignment[]): MatchResult[] {
+  return resourcePeople
+    .filter((person) => person.employmentType !== "Corporate")
+    .map((person) => {
+      const matchingSkills = demand.requiredSkills.filter((skill) => person.skills.includes(skill));
+      const skillFit = demand.requiredSkills.length === 0 ? 100 : Math.round((matchingSkills.length / demand.requiredSkills.length) * 100);
+      const days = businessDays(demand.start, 10).filter((day) => day <= demand.end);
+      const openDays = days.filter((day) => getBookedPct(assignments, person.id, day, false) + demand.allocationPct <= getAvailablePct(assignments, person.id, day)).length;
+      const availabilityFit = days.length === 0 ? 0 : Math.round((openDays / days.length) * 100);
+      const levelFit = person.level === demand.level ? 100 : person.level.includes("Principal") && demand.level.includes("Principal") ? 90 : 65;
+      const locationFit = person.location === demand.location ? 100 : 75;
+      const score = Math.round(skillFit * 0.45 + availabilityFit * 0.35 + levelFit * 0.12 + locationFit * 0.08);
+      const explanation = [
+        `${skillFit}% skill fit (${matchingSkills.length}/${demand.requiredSkills.length})`,
+        `${availabilityFit}% availability in first fortnight`,
+        person.location === demand.location ? "same location" : `based in ${person.location}`,
+      ];
+      return { person, score, skillFit, availabilityFit, explanation };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+function encodeDrag(payload: DragPayload) {
+  return JSON.stringify(payload);
+}
+
+function decodeDrag(value: string): DragPayload | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    if (!("kind" in parsed) || !("id" in parsed)) return null;
+    if ((parsed.kind === "assignment" || parsed.kind === "demand") && typeof parsed.id === "string") {
+      return { kind: parsed.kind, id: parsed.id };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function buildExport(assignments: ResourceAssignment[]) {
+  const rows = [
+    ["person_id", "person", "client", "project", "assignment_type", "status", "role", "start", "end", "allocation_pct", "source"],
+    ...assignments.map((assignment) => {
+      const person = resourcePeople.find((item) => item.id === assignment.personId);
+      const project = assignmentProject(assignment);
+      return [
+        assignment.personId ?? "UNFILLED",
+        person?.name ?? "Unfilled demand",
+        project.client,
+        project.name,
+        assignment.type,
+        assignment.status,
+        assignment.role,
+        assignment.start,
+        assignment.end,
+        String(assignment.allocationPct),
+        assignment.source,
+      ];
+    }),
+  ];
+  return rows.map((row) => row.map((cell) => `"${cell.replaceAll("\"", "\"\"")}"`).join(",")).join("\n");
+}
+
+export function ResourceCommandCentreClient() {
+  const [activeTab, setActiveTab] = useState<Tab>("centre");
+  const [assignments, setAssignments] = useState<ResourceAssignment[]>(resourceAssignments);
+  const [audit, setAudit] = useState<AuditEntry[]>(auditEntries);
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>(resourceAssignments[0]?.id ?? "");
+  const [selectedDemandId, setSelectedDemandId] = useState(resourceDemands[0]?.id ?? "");
+  const [conflict, setConflict] = useState<ConflictDraft | null>(null);
+  const [search, setSearch] = useState("");
+  const [pillar, setPillar] = useState("");
+  const [skill, setSkill] = useState("");
+  const [status, setStatus] = useState("");
+  const [financeVisible, setFinanceVisible] = useState(true);
+  const [overrideReason, setOverrideReason] = useState("Delivery continuity approved by COO");
+  const [comment, setComment] = useState("@Maya please review this clash before Friday.");
+
+  const scheduleDays = useMemo(() => businessDays(TODAY, 15), []);
+  const selectedAssignment = assignments.find((assignment) => assignment.id === selectedAssignmentId) ?? assignments[0];
+  const selectedDemand = resourceDemands.find((demand) => demand.id === selectedDemandId) ?? resourceDemands[0];
+  const selectedMatches = useMemo(() => matchCandidates(selectedDemand, assignments), [assignments, selectedDemand]);
+  const pillars = [...new Set(resourcePeople.map((person) => person.pillar))];
+  const skills = [...new Set(resourcePeople.flatMap((person) => person.skills))].sort();
+
+  const filteredPeople = resourcePeople.filter((person) => {
+    const haystack = `${person.name} ${person.role} ${person.level} ${person.manager} ${person.location}`.toLowerCase();
+    if (search && !haystack.includes(search.toLowerCase())) return false;
+    if (pillar && person.pillar !== pillar) return false;
+    if (skill && !person.skills.includes(skill)) return false;
+    return true;
+  });
+
+  const dashboard = useMemo(() => {
+    const days = businessDays(TODAY, 30);
+    let available = 0;
+    let booked = 0;
+    let leave = 0;
+    let overAllocatedCells = 0;
+    let benchCells = 0;
+    for (const person of resourcePeople) {
+      for (const day of days) {
+        const availablePct = getAvailablePct(assignments, person.id, day);
+        const bookedPct = getBookedPct(assignments, person.id, day, false);
+        available += availablePct;
+        booked += Math.min(bookedPct, availablePct);
+        leave += getLeavePct(assignments, person.id, day);
+        if (bookedPct > availablePct) overAllocatedCells += 1;
+        if (availablePct - bookedPct >= 50) benchCells += 1;
+      }
+    }
+    const utilisation = available === 0 ? 0 : Math.round((booked / available) * 100);
+    const weightedPipeline = resourceDemands.reduce((total, demand) => total + demand.allocationPct * (demand.confidence / 100), 0);
+    const endingSoon = assignments.filter((assignment) => assignment.end >= TODAY && assignment.end <= addDays(TODAY, 21) && assignment.type !== "Leave").length;
+    return { utilisation, available, booked, leave, overAllocatedCells, benchCells, weightedPipeline: Math.round(weightedPipeline), endingSoon };
+  }, [assignments]);
+
+  function appendAudit(action: string, record: string, summary: string) {
+    const next: AuditEntry = {
+      id: `aud-${Date.now()}`,
+      actor: "COO / Resource Manager",
+      action,
+      record,
+      summary,
+      at: new Intl.DateTimeFormat("en-AU", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date()),
+    };
+    setAudit((items) => [next, ...items]);
+  }
+
+  function moveAssignment(assignmentId: string, personId: string, date: string) {
+    const current = assignments.find((assignment) => assignment.id === assignmentId);
+    if (!current) return;
+    const duration = assignmentDurationDays(current);
+    const targetPerson = resourcePeople.find((person) => person.id === personId);
+    setAssignments((items) =>
+      items.map((assignment) =>
+        assignment.id === assignmentId
+          ? { ...assignment, personId, start: date, end: addDays(date, duration), source: "Manual schedule drag" }
+          : assignment,
+      ),
+    );
+    setSelectedAssignmentId(assignmentId);
+    appendAudit("Moved assignment", targetPerson?.name ?? "Unknown person", `${current.role} moved to ${formatDate(date)}.`);
+  }
+
+  function createAssignmentFromDemand(demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") {
+    const availablePct = getAvailablePct(assignments, person.id, date);
+    const bookedPct = getBookedPct(assignments, person.id, date, false);
+    const resultingPct = bookedPct + demand.allocationPct;
+    if (mode === "confirmed" && resultingPct > availablePct) {
+      setConflict({ demand, person, date, availablePct, bookedPct, resultingPct });
+      setActiveTab("schedule");
+      return;
+    }
+    const id = `asg-${Date.now()}`;
+    const statusByMode: Record<typeof mode, AssignmentStatus> = {
+      confirmed: "Confirmed",
+      tentative: "Tentative",
+      waiting: "Waiting List",
+      override: "Confirmed",
+    };
+    const project = resourceProjects.find((item) => item.client === demand.client) ?? resourceProjects[0];
+    const created: ResourceAssignment = {
+      id,
+      personId: person.id,
+      projectId: project.id,
+      type: "Billable",
+      status: statusByMode[mode],
+      role: demand.role,
+      start: date,
+      end: demand.end,
+      allocationPct: demand.allocationPct,
+      confidence: demand.confidence,
+      source: mode === "override" ? "Approved over-allocation" : "Demand drag/drop",
+      notes: demand.notes,
+      override: mode === "override" ? { reason: overrideReason, approver: "COO / Resource Manager", expiryDate: addDays(date, 14) } : undefined,
+    };
+    setAssignments((items) => [created, ...items]);
+    setSelectedAssignmentId(id);
+    setConflict(null);
+    appendAudit("Created assignment", `${person.name} / ${demand.client}`, `${demand.allocationPct}% ${demand.role} created from ${demand.hubspotId}.`);
+  }
+
+  function onDropCell(event: DragEvent<HTMLDivElement>, person: ResourcePerson, date: string) {
+    event.preventDefault();
+    const payload = decodeDrag(event.dataTransfer.getData("application/json"));
+    if (!payload) return;
+    if (payload.kind === "assignment") {
+      moveAssignment(payload.id, person.id, date);
+      return;
+    }
+    const demand = resourceDemands.find((item) => item.id === payload.id);
+    if (demand) createAssignmentFromDemand(demand, person, date, "confirmed");
+  }
+
+  function resizeAssignment(days: number) {
+    if (!selectedAssignment) return;
+    setAssignments((items) =>
+      items.map((assignment) =>
+        assignment.id === selectedAssignment.id ? { ...assignment, end: addDays(assignment.end, days) } : assignment,
+      ),
+    );
+    appendAudit("Resized assignment", selectedAssignment.role, `${days > 0 ? "Extended" : "Shortened"} assignment by ${Math.abs(days)} day(s).`);
+  }
+
+  function splitAssignment() {
+    if (!selectedAssignment) return;
+    const splitDate = addDays(selectedAssignment.start, Math.max(1, Math.floor(assignmentDurationDays(selectedAssignment) / 2)));
+    if (splitDate >= selectedAssignment.end) return;
+    const second: ResourceAssignment = {
+      ...selectedAssignment,
+      id: `asg-${Date.now()}`,
+      start: addDays(splitDate, 1),
+      source: "Split assignment",
+      notes: `${selectedAssignment.notes} Split from ${selectedAssignment.id}.`,
+    };
+    setAssignments((items) =>
+      items.map((assignment) => (assignment.id === selectedAssignment.id ? { ...assignment, end: splitDate } : assignment)).concat(second),
+    );
+    appendAudit("Split assignment", selectedAssignment.role, `Split at ${formatDate(splitDate)} with daily history retained.`);
+  }
+
+  function approveSelectedOverride() {
+    if (!selectedAssignment) return;
+    setAssignments((items) =>
+      items.map((assignment) =>
+        assignment.id === selectedAssignment.id
+          ? {
+              ...assignment,
+              status: "Confirmed",
+              override: { reason: overrideReason, approver: "COO / Resource Manager", expiryDate: addDays(TODAY, 14) },
+            }
+          : assignment,
+      ),
+    );
+    appendAudit("Approved exception", selectedAssignment.role, `${overrideReason}; expires ${formatDate(addDays(TODAY, 14))}.`);
+  }
+
+  function addComment() {
+    if (!selectedAssignment) return;
+    appendAudit("Commented", selectedAssignment.role, comment);
+  }
+
+  function downloadCsv() {
+    const blob = new Blob([buildExport(assignments)], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "simplyai-resource-plan.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+    appendAudit("Exported plan", "Resource plan", "CSV export generated from current live plan.");
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 pt-14 lg:pt-0">
+      <header className="border-b border-slate-200 bg-white px-6 py-5">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+              <Sparkles size={14} /> New product MVP foundation
+            </div>
+            <h1 className="mt-3 text-2xl font-bold tracking-tight text-slate-950">Simplyai Resource Command Centre</h1>
+            <p className="mt-1 max-w-4xl text-sm text-slate-600">
+              Day-level resourcing, capacity, demand and utilisation control. Seeded from workbook patterns until the source workbook is attached.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setFinanceVisible((value) => !value)}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <Lock size={16} /> {financeVisible ? "Hide finance" : "Show finance"}
+            </button>
+            <button
+              onClick={downloadCsv}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+            >
+              <Download size={16} /> Export plan
+            </button>
+          </div>
+        </div>
+        <nav className="mt-5 flex gap-2 overflow-x-auto pb-1">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold transition ${
+                activeTab === tab.id ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      <main className="space-y-6 p-6">
+        <FilterBar search={search} setSearch={setSearch} pillar={pillar} setPillar={setPillar} skill={skill} setSkill={setSkill} status={status} setStatus={setStatus} pillars={pillars} skills={skills} />
+        {activeTab === "centre" && <CommandCentre assignments={assignments} dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} />}
+        {activeTab === "schedule" && (
+          <Schedule
+            assignments={assignments}
+            people={filteredPeople}
+            days={scheduleDays}
+            selectedAssignment={selectedAssignment}
+            selectedDemand={selectedDemand}
+            selectedMatches={selectedMatches}
+            conflict={conflict}
+            overrideReason={overrideReason}
+            setOverrideReason={setOverrideReason}
+            setSelectedAssignmentId={setSelectedAssignmentId}
+            onDropCell={onDropCell}
+            resizeAssignment={resizeAssignment}
+            splitAssignment={splitAssignment}
+            approveSelectedOverride={approveSelectedOverride}
+            createAssignmentFromDemand={createAssignmentFromDemand}
+          />
+        )}
+        {activeTab === "demand" && (
+          <DemandPanel assignments={assignments} selectedDemandId={selectedDemandId} setSelectedDemandId={setSelectedDemandId} selectedMatches={selectedMatches} createAssignmentFromDemand={createAssignmentFromDemand} />
+        )}
+        {activeTab === "people" && <PeopleDirectory people={filteredPeople} assignments={assignments} financeVisible={financeVisible} />}
+        {activeTab === "bench" && <BenchView people={filteredPeople} assignments={assignments} />}
+        {activeTab === "migration" && <MigrationReview />}
+        {activeTab === "approvals" && <ApprovalsAudit assignments={assignments} audit={audit} selectedAssignment={selectedAssignment} comment={comment} setComment={setComment} addComment={addComment} approveSelectedOverride={approveSelectedOverride} />}
+      </main>
+    </div>
+  );
+}
+
+function FilterBar({
+  search,
+  setSearch,
+  pillar,
+  setPillar,
+  skill,
+  setSkill,
+  status,
+  setStatus,
+  pillars,
+  skills,
+}: {
+  search: string;
+  setSearch: (value: string) => void;
+  pillar: string;
+  setPillar: (value: string) => void;
+  skill: string;
+  setSkill: (value: string) => void;
+  status: string;
+  setStatus: (value: string) => void;
+  pillars: string[];
+  skills: string[];
+}) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search people, managers, roles…"
+            className="w-72 rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none"
+          />
+        </div>
+        <select value={pillar} onChange={(event) => setPillar(event.target.value)} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+          <option value="">All pillars</option>
+          {pillars.map((item) => (
+            <option key={item}>{item}</option>
+          ))}
+        </select>
+        <select value={skill} onChange={(event) => setSkill(event.target.value)} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+          <option value="">All skills</option>
+          {skills.map((item) => (
+            <option key={item}>{item}</option>
+          ))}
+        </select>
+        <select value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+          <option value="">All assignment statuses</option>
+          <option>Confirmed</option>
+          <option>Tentative</option>
+          <option>Waiting List</option>
+          <option>At Risk</option>
+        </select>
+        <div className="ml-auto inline-flex items-center gap-2 text-xs font-semibold text-slate-500">
+          <Filter size={14} /> Filters apply across schedule, people and bench views
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CommandCentre({
+  assignments,
+  dashboard,
+  financeVisible,
+  setActiveTab,
+}: {
+  assignments: ResourceAssignment[];
+  dashboard: { utilisation: number; available: number; booked: number; leave: number; overAllocatedCells: number; benchCells: number; weightedPipeline: number; endingSoon: number };
+  financeVisible: boolean;
+  setActiveTab: (tab: Tab) => void;
+}) {
+  const revenue = assignments.reduce((total, assignment) => total + getAssignmentRevenue(assignment), 0);
+  const margin = assignments.reduce((total, assignment) => total + getAssignmentMargin(assignment), 0);
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <MetricCard label="30-day utilisation" value={pct(dashboard.utilisation)} sub={`${pct(dashboard.booked)} booked of ${pct(dashboard.available)} available units`} icon={<UserCheck size={18} />} />
+        <MetricCard label="Weighted pipeline" value={`${dashboard.weightedPipeline}%`} sub="Demand weighted by confidence" icon={<Sparkles size={18} />} />
+        <MetricCard label="Over-allocation" value={dashboard.overAllocatedCells} sub="Person-day cells needing action" tone="danger" icon={<AlertTriangle size={18} />} />
+        <MetricCard label="Bench capacity" value={dashboard.benchCells} sub="Cells with 50%+ capacity" tone="amber" icon={<Clock3 size={18} />} />
+        <MetricCard label="Ending soon" value={dashboard.endingSoon} sub="Assignments ending within 21 days" icon={<ArrowRightLeft size={18} />} />
+        <MetricCard label="Forecast margin" value={financeVisible ? money(margin) : "Restricted"} sub={financeVisible ? `${money(revenue)} revenue` : "Finance-only field"} icon={<Lock size={18} />} />
+      </div>
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-slate-950">Operating control view</h2>
+              <p className="text-sm text-slate-500">Current, 30-day and 90-day capacity are derived from daily assignments, leave and working patterns.</p>
+            </div>
+            <button onClick={() => setActiveTab("schedule")} className="rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Open schedule</button>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            <CapacityBand label="Today" available="87%" committed="76%" tentative="9%" />
+            <CapacityBand label="Next 30 days" available="82%" committed={`${dashboard.utilisation}%`} tentative="14%" />
+            <CapacityBand label="Next 90 days" available="69%" committed="58%" tentative="21%" />
+          </div>
+          <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
+            Weekly digest: resolve Charlie’s 140% clash, confirm Ben’s CBA/Powerlink alternative, and fill Cleanaway’s 60% Data Engineer demand before 18 Jul.
+          </div>
+        </section>
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-bold text-slate-950">Action panels</h2>
+          <div className="mt-4 space-y-3">
+            <ActionItem title="3 unfilled demand records" body="Drag qualified HubSpot demand onto matched people." tab="demand" setActiveTab={setActiveTab} />
+            <ActionItem title="2 approval exceptions" body="Over-allocation and waiting-list records need decision history." tab="approvals" setActiveTab={setActiveTab} />
+            <ActionItem title="5 migration issues" body="Workbook ambiguity, missing mappings and formula errors are tracked." tab="migration" setActiveTab={setActiveTab} />
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, sub, icon, tone = "blue" }: { label: string; value: string | number; sub: string; icon: React.ReactNode; tone?: "blue" | "danger" | "amber" }) {
+  const toneClass = tone === "danger" ? "text-red-600 bg-red-50" : tone === "amber" ? "text-amber-700 bg-amber-50" : "text-blue-700 bg-blue-50";
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold text-slate-500">{label}</span>
+        <span className={`rounded-lg p-2 ${toneClass}`}>{icon}</span>
+      </div>
+      <div className="mt-3 text-2xl font-bold text-slate-950">{value}</div>
+      <div className="mt-1 text-xs text-slate-500">{sub}</div>
+    </div>
+  );
+}
+
+function CapacityBand({ label, available, committed, tentative }: { label: string; available: string; committed: string; tentative: string }) {
+  return (
+    <div className="rounded-xl border border-slate-200 p-4">
+      <div className="text-sm font-bold text-slate-900">{label}</div>
+      <div className="mt-3 space-y-2 text-xs text-slate-500">
+        <Progress label="Available" value={available} className="bg-emerald-500" />
+        <Progress label="Committed" value={committed} className="bg-blue-700" />
+        <Progress label="Tentative" value={tentative} className="bg-purple-500" />
+      </div>
+    </div>
+  );
+}
+
+function Progress({ label, value, className }: { label: string; value: string; className: string }) {
+  return (
+    <div>
+      <div className="mb-1 flex justify-between"><span>{label}</span><span>{value}</span></div>
+      <div className="h-2 rounded-full bg-slate-100"><div className={`h-2 rounded-full ${className}`} style={{ width: value }} /></div>
+    </div>
+  );
+}
+
+function ActionItem({ title, body, tab, setActiveTab }: { title: string; body: string; tab: Tab; setActiveTab: (tab: Tab) => void }) {
+  return (
+    <button onClick={() => setActiveTab(tab)} className="w-full rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300 hover:bg-blue-50">
+      <div className="font-semibold text-slate-950">{title}</div>
+      <div className="mt-1 text-sm text-slate-500">{body}</div>
+    </button>
+  );
+}
+
+function Schedule({
+  assignments,
+  people,
+  days,
+  selectedAssignment,
+  selectedDemand,
+  selectedMatches,
+  conflict,
+  overrideReason,
+  setOverrideReason,
+  setSelectedAssignmentId,
+  onDropCell,
+  resizeAssignment,
+  splitAssignment,
+  approveSelectedOverride,
+  createAssignmentFromDemand,
+}: {
+  assignments: ResourceAssignment[];
+  people: ResourcePerson[];
+  days: string[];
+  selectedAssignment?: ResourceAssignment;
+  selectedDemand: ResourceDemand;
+  selectedMatches: MatchResult[];
+  conflict: ConflictDraft | null;
+  overrideReason: string;
+  setOverrideReason: (value: string) => void;
+  setSelectedAssignmentId: (id: string) => void;
+  onDropCell: (event: DragEvent<HTMLDivElement>, person: ResourcePerson, date: string) => void;
+  resizeAssignment: (days: number) => void;
+  splitAssignment: () => void;
+  approveSelectedOverride: () => void;
+  createAssignmentFromDemand: (demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") => void;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[1fr_360px]">
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <div>
+            <h2 className="text-lg font-bold text-slate-950">Daily schedule</h2>
+            <p className="text-sm text-slate-500">Drag assignment cards or demand items onto a person and date. Leave reduces available capacity before conflicts are evaluated.</p>
+          </div>
+          <div className="hidden items-center gap-2 text-xs text-slate-500 md:flex"><MousePointer2 size={14} /> Day-level operational source of truth</div>
+        </div>
+        <div className="overflow-auto">
+          <div className="min-w-[1180px]">
+            <div className="grid border-b border-slate-200 bg-slate-50" style={{ gridTemplateColumns: `220px repeat(${days.length}, minmax(92px, 1fr))` }}>
+              <div className="sticky left-0 z-10 border-r border-slate-200 bg-slate-50 p-3 text-xs font-bold uppercase tracking-wide text-slate-500">Person</div>
+              {days.map((day) => (
+                <div key={day} className="border-r border-slate-200 p-3 text-center text-xs font-bold text-slate-600">{formatDate(day)}</div>
+              ))}
+            </div>
+            {people.map((person) => (
+              <div key={person.id} className="grid border-b border-slate-100" style={{ gridTemplateColumns: `220px repeat(${days.length}, minmax(92px, 1fr))` }}>
+                <div className="sticky left-0 z-10 border-r border-slate-200 bg-white p-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">{compactName(person.name)}</div>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-bold text-slate-950">{person.name}</div>
+                      <div className="truncate text-xs text-slate-500">{person.level} · {person.location}</div>
+                    </div>
+                  </div>
+                </div>
+                {days.map((day) => {
+                  const dailyAssignments = assignments.filter((assignment) => assignment.personId === person.id && overlaps(day, assignment));
+                  const bookedPct = getBookedPct(assignments, person.id, day, false);
+                  const availablePct = getAvailablePct(assignments, person.id, day);
+                  const over = bookedPct > availablePct;
+                  return (
+                    <div
+                      key={`${person.id}-${day}`}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => onDropCell(event, person, day)}
+                      className={`min-h-28 border-r border-slate-100 p-1.5 ${over ? "bg-red-50" : availablePct === 0 ? "bg-slate-100" : "bg-white"}`}
+                    >
+                      <div className={`mb-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${over ? "bg-red-100 text-red-700" : availablePct - bookedPct >= 50 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-500"}`}>
+                        {pct(bookedPct)} / {pct(availablePct)}
+                      </div>
+                      <div className="space-y-1">
+                        {dailyAssignments.slice(0, 3).map((assignment) => {
+                          const project = assignmentProject(assignment);
+                          return (
+                            <button
+                              key={assignment.id}
+                              draggable
+                              onDragStart={(event) => event.dataTransfer.setData("application/json", encodeDrag({ kind: "assignment", id: assignment.id }))}
+                              onClick={() => setSelectedAssignmentId(assignment.id)}
+                              className={`w-full rounded-md border px-2 py-1 text-left text-[11px] shadow-sm ${typeClasses[assignment.type]} ${statusClasses[assignment.status]} ${selectedAssignment?.id === assignment.id ? "ring-2 ring-offset-1 ring-blue-400" : ""}`}
+                            >
+                              <div className="truncate font-bold">{project.client} · {assignment.allocationPct}%</div>
+                              <div className="truncate opacity-90">{assignment.role}</div>
+                            </button>
+                          );
+                        })}
+                        {dailyAssignments.length > 3 && <div className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-500">+{dailyAssignments.length - 3} more</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <aside className="space-y-4">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h3 className="flex items-center gap-2 text-base font-bold text-slate-950"><PanelRightOpen size={18} /> Assignment drawer</h3>
+          {selectedAssignment ? <AssignmentDrawer assignment={selectedAssignment} resizeAssignment={resizeAssignment} splitAssignment={splitAssignment} approveSelectedOverride={approveSelectedOverride} overrideReason={overrideReason} setOverrideReason={setOverrideReason} /> : <p className="mt-3 text-sm text-slate-500">Select an assignment to inspect details.</p>}
+        </section>
+        {conflict && (
+          <section className="rounded-2xl border-2 border-red-300 bg-red-50 p-5 shadow-sm">
+            <h3 className="flex items-center gap-2 font-bold text-red-900"><AlertTriangle size={18} /> Conflict workflow</h3>
+            <p className="mt-2 text-sm text-red-800">
+              {conflict.person.name} would reach {pct(conflict.resultingPct)} on {formatDate(conflict.date)} against {pct(conflict.availablePct)} available capacity.
+            </p>
+            <div className="mt-3 space-y-2">
+              <input value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} className="w-full rounded-lg border border-red-200 px-3 py-2 text-sm" />
+              <button onClick={() => createAssignmentFromDemand(conflict.demand, conflict.person, conflict.date, "tentative")} className="w-full rounded-lg bg-white px-3 py-2 text-sm font-semibold text-red-700">Add as tentative hold</button>
+              <button onClick={() => createAssignmentFromDemand(conflict.demand, conflict.person, conflict.date, "waiting")} className="w-full rounded-lg bg-white px-3 py-2 text-sm font-semibold text-red-700">Add to waiting list</button>
+              <button onClick={() => createAssignmentFromDemand(conflict.demand, conflict.person, conflict.date, "override")} className="w-full rounded-lg bg-red-700 px-3 py-2 text-sm font-semibold text-white">Approve time-limited exception</button>
+            </div>
+          </section>
+        )}
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h3 className="text-base font-bold text-slate-950">Unfilled demand</h3>
+          <div className="mt-3 space-y-2">
+            {resourceDemands.map((demand) => (
+              <button
+                key={demand.id}
+                draggable
+                onDragStart={(event) => event.dataTransfer.setData("application/json", encodeDrag({ kind: "demand", id: demand.id }))}
+                className="w-full rounded-xl border border-dashed border-blue-300 bg-blue-50 p-3 text-left hover:bg-blue-100"
+              >
+                <div className="font-bold text-blue-950">{demand.client} · {demand.role}</div>
+                <div className="text-xs text-blue-700">{demand.allocationPct}% · {demand.stage} · expires {formatDate(demand.expiryDate)}</div>
+              </button>
+            ))}
+          </div>
+        </section>
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <h3 className="text-base font-bold text-slate-950">Best match for selected demand</h3>
+          <div className="mt-3 space-y-3">
+            {selectedMatches.slice(0, 3).map((match) => (
+              <button key={match.person.id} onClick={() => createAssignmentFromDemand(selectedDemand, match.person, selectedDemand.start, "confirmed")} className="w-full rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300">
+                <div className="flex items-center justify-between"><span className="font-bold text-slate-950">{match.person.name}</span><span className="text-sm font-bold text-blue-700">{match.score}</span></div>
+                <div className="mt-1 text-xs text-slate-500">{match.explanation.join(" · ")}</div>
+              </button>
+            ))}
+          </div>
+        </section>
+      </aside>
+    </div>
+  );
+}
+
+function AssignmentDrawer({
+  assignment,
+  resizeAssignment,
+  splitAssignment,
+  approveSelectedOverride,
+  overrideReason,
+  setOverrideReason,
+}: {
+  assignment: ResourceAssignment;
+  resizeAssignment: (days: number) => void;
+  splitAssignment: () => void;
+  approveSelectedOverride: () => void;
+  overrideReason: string;
+  setOverrideReason: (value: string) => void;
+}) {
+  const person = resourcePeople.find((item) => item.id === assignment.personId);
+  const project = assignmentProject(assignment);
+  return (
+    <div className="mt-4 space-y-4">
+      <div>
+        <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{project.client} / {project.code}</div>
+        <div className="text-lg font-bold text-slate-950">{assignment.role}</div>
+        <div className="text-sm text-slate-500">{person?.name ?? "Unfilled"} · {assignment.start} to {assignment.end}</div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-sm">
+        <DrawerField label="Allocation" value={pct(assignment.allocationPct)} />
+        <DrawerField label="Status" value={assignment.status} />
+        <DrawerField label="Billability" value={assignment.type} />
+        <DrawerField label="Confidence" value={pct(assignment.confidence)} />
+        <DrawerField label="Revenue" value={money(getAssignmentRevenue(assignment))} />
+        <DrawerField label="Margin" value={money(getAssignmentMargin(assignment))} />
+      </div>
+      <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{assignment.notes}</div>
+      {assignment.override && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+          Approved by {assignment.override.approver}; expires {formatDate(assignment.override.expiryDate)}. Reason: {assignment.override.reason}
+        </div>
+      )}
+      <div className="space-y-2">
+        <input value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={() => resizeAssignment(5)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold">Extend 5 days</button>
+          <button onClick={() => resizeAssignment(-5)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold">Shorten 5 days</button>
+          <button onClick={splitAssignment} className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold"><SplitSquareHorizontal className="mr-1 inline" size={14} />Split</button>
+          <button onClick={approveSelectedOverride} className="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white">Approve</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DrawerField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 p-2">
+      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</div>
+      <div className="mt-0.5 font-semibold text-slate-800">{value}</div>
+    </div>
+  );
+}
+
+function DemandPanel({
+  assignments,
+  selectedDemandId,
+  setSelectedDemandId,
+  selectedMatches,
+  createAssignmentFromDemand,
+}: {
+  assignments: ResourceAssignment[];
+  selectedDemandId: string;
+  setSelectedDemandId: (id: string) => void;
+  selectedMatches: MatchResult[];
+  createAssignmentFromDemand: (demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") => void;
+}) {
+  const selectedDemand = resourceDemands.find((item) => item.id === selectedDemandId) ?? resourceDemands[0];
+  const demandLoad = resourceDemands.reduce((total, demand) => total + demand.allocationPct * demand.confidence / 100, 0);
+  return (
+    <div className="grid grid-cols-1 gap-6 xl:grid-cols-[430px_1fr]">
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-lg font-bold text-slate-950">Demand board</h2>
+        <p className="mt-1 text-sm text-slate-500">HubSpot stages create aggregate forecast, placeholder demand or committed assignments depending on configuration.</p>
+        <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm"><b>{Math.round(demandLoad)}%</b> weighted allocation demand across qualified and proposed opportunities.</div>
+        <div className="mt-4 space-y-3">
+          {resourceDemands.map((demand) => (
+            <button key={demand.id} onClick={() => setSelectedDemandId(demand.id)} className={`w-full rounded-xl border p-4 text-left ${selectedDemandId === demand.id ? "border-blue-400 bg-blue-50" : "border-slate-200 hover:bg-slate-50"}`}>
+              <div className="flex items-center justify-between"><span className="font-bold text-slate-950">{demand.client}</span><span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs font-bold text-white">{demand.stage}</span></div>
+              <div className="mt-1 text-sm text-slate-600">{demand.role} · {demand.allocationPct}% · {demand.level}</div>
+              <div className="mt-2 flex flex-wrap gap-1">{demand.requiredSkills.map((item) => <span key={item} className="rounded bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">{item}</span>)}</div>
+            </button>
+          ))}
+        </div>
+      </section>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-lg font-bold text-slate-950">Candidate matching</h2>
+        <p className="mt-1 text-sm text-slate-500">Deterministic score blends skills, first-fortnight availability, level and location. Every recommendation includes its explanation.</p>
+        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+          {selectedMatches.slice(0, 8).map((match) => (
+            <div key={match.person.id} className="rounded-2xl border border-slate-200 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-bold text-slate-950">{match.person.name}</h3>
+                  <p className="text-sm text-slate-500">{match.person.role} · {match.person.pillar}</p>
+                </div>
+                <div className="rounded-xl bg-blue-50 px-3 py-2 text-center"><div className="text-lg font-bold text-blue-700">{match.score}</div><div className="text-[10px] font-bold uppercase text-blue-500">match</div></div>
+              </div>
+              <div className="mt-3 space-y-1 text-sm text-slate-600">
+                {match.explanation.map((item) => <div key={item}>• {item}</div>)}
+              </div>
+              <div className="mt-4 flex gap-2">
+                <button onClick={() => createAssignmentFromDemand(selectedDemand, match.person, selectedDemand.start, "confirmed")} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white">Assign</button>
+                <button onClick={() => createAssignmentFromDemand(selectedDemand, match.person, selectedDemand.start, "tentative")} className="rounded-lg border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-700">Tentative</button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+          Current assignments considered: {assignments.length}. The matching engine ignores name joins and uses stable person IDs.
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PeopleDirectory({ people, assignments, financeVisible }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; financeVisible: boolean }) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-200 px-5 py-4">
+        <h2 className="text-lg font-bold text-slate-950">People & skills directory</h2>
+        <p className="text-sm text-slate-500">Stable IDs, working patterns, skills, certifications, locations and controlled rate visibility.</p>
+      </div>
+      <div className="overflow-auto">
+        <table className="min-w-full divide-y divide-slate-200 text-sm">
+          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-4 py-3">Person</th>
+              <th className="px-4 py-3">Pillar</th>
+              <th className="px-4 py-3">Manager</th>
+              <th className="px-4 py-3">Location</th>
+              <th className="px-4 py-3">Skills</th>
+              <th className="px-4 py-3">Current load</th>
+              <th className="px-4 py-3">Rates</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {people.map((person) => {
+              const currentLoad = getBookedPct(assignments, person.id, TODAY, false);
+              return (
+                <tr key={person.id} className="hover:bg-slate-50">
+                  <td className="px-4 py-3"><div className="font-bold text-slate-950">{person.name}</div><div className="text-xs text-slate-500">{person.employeeNo} · {person.role}</div></td>
+                  <td className="px-4 py-3">{person.pillar}</td>
+                  <td className="px-4 py-3">{person.manager}</td>
+                  <td className="px-4 py-3">{person.location}</td>
+                  <td className="px-4 py-3"><div className="flex max-w-xl flex-wrap gap-1">{person.skills.map((item) => <span key={item} className="rounded bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">{item}</span>)}</div></td>
+                  <td className="px-4 py-3"><span className={currentLoad > getAvailablePct(assignments, person.id, TODAY) ? "font-bold text-red-600" : "font-bold text-slate-700"}>{pct(currentLoad)}</span></td>
+                  <td className="px-4 py-3">{financeVisible ? `${money(person.billRate)} / ${money(person.costRate)}` : <span className="text-slate-400">Restricted</span>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function BenchView({ people, assignments }: { people: ResourcePerson[]; assignments: ResourceAssignment[] }) {
+  const days = businessDays(TODAY, 10);
+  const rows = people.map((person) => {
+    const remaining = days.map((day) => getAvailablePct(assignments, person.id, day) - getBookedPct(assignments, person.id, day, false));
+    const avg = Math.round(remaining.reduce((total, item) => total + item, 0) / remaining.length);
+    const ending = assignments.find((assignment) => assignment.personId === person.id && assignment.end >= TODAY && assignment.end <= addDays(TODAY, 21) && assignment.type !== "Leave");
+    return { person, avg, ending };
+  }).sort((a, b) => b.avg - a.avg);
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 className="text-lg font-bold text-slate-950">Bench & redeployment</h2>
+      <p className="mt-1 text-sm text-slate-500">Bench is calculated from remaining daily capacity after leave and confirmed work.</p>
+      <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {rows.map(({ person, avg, ending }) => (
+          <div key={person.id} className={`rounded-2xl border p-4 ${avg >= 50 ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}>
+            <div className="flex items-center justify-between"><h3 className="font-bold text-slate-950">{person.name}</h3><span className="text-lg font-bold text-slate-900">{pct(avg)}</span></div>
+            <div className="mt-1 text-sm text-slate-500">avg remaining next 10 business days</div>
+            <div className="mt-3 flex flex-wrap gap-1">{person.tags.map((item) => <span key={item} className="rounded bg-white px-2 py-0.5 text-xs font-semibold text-slate-600">{item}</span>)}</div>
+            {ending && <div className="mt-3 rounded-lg bg-blue-50 p-2 text-xs font-semibold text-blue-700">Ending soon: {assignmentProject(ending).client} on {formatDate(ending.end)}</div>}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MigrationReview() {
+  return (
+    <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_360px]">
+      <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <h2 className="flex items-center gap-2 text-lg font-bold text-slate-950"><FileSpreadsheet size={19} /> Workbook migration review</h2>
+          <p className="text-sm text-slate-500">The source workbook was not attached in this session, so this screen is seeded from the brief’s workbook findings and demo scenarios.</p>
+        </div>
+        <div className="overflow-auto">
+          <table className="min-w-full divide-y divide-slate-200 text-sm">
+            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Severity</th><th className="px-4 py-3">Area</th><th className="px-4 py-3">Record</th><th className="px-4 py-3">Issue</th><th className="px-4 py-3">Resolution</th><th className="px-4 py-3">Status</th></tr></thead>
+            <tbody className="divide-y divide-slate-100">
+              {migrationIssues.map((issue) => (
+                <tr key={issue.id}>
+                  <td className="px-4 py-3"><span className={`rounded-full px-2 py-0.5 text-xs font-bold ${issue.severity === "Critical" ? "bg-red-100 text-red-700" : issue.severity === "Warning" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{issue.severity}</span></td>
+                  <td className="px-4 py-3 font-semibold text-slate-800">{issue.area}</td>
+                  <td className="px-4 py-3 text-slate-500">{issue.record}</td>
+                  <td className="px-4 py-3 max-w-md text-slate-700">{issue.issue}</td>
+                  <td className="px-4 py-3 max-w-md text-slate-600">{issue.proposedResolution}</td>
+                  <td className="px-4 py-3">{issue.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h3 className="font-bold text-slate-950">Import report summary</h3>
+        <div className="mt-4 space-y-3 text-sm text-slate-600">
+          <SummaryLine label="Named resources" value="212" />
+          <SummaryLine label="Active resources" value="207" />
+          <SummaryLine label="Populated allocation cells" value="2,300+" />
+          <SummaryLine label="Monthly cycles" value="15" />
+          <SummaryLine label="Stable IDs required" value="Yes" />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SummaryLine({ label, value }: { label: string; value: string }) {
+  return <div className="flex justify-between border-b border-slate-100 pb-2"><span>{label}</span><b className="text-slate-950">{value}</b></div>;
+}
+
+function ApprovalsAudit({
+  assignments,
+  audit,
+  selectedAssignment,
+  comment,
+  setComment,
+  addComment,
+  approveSelectedOverride,
+}: {
+  assignments: ResourceAssignment[];
+  audit: AuditEntry[];
+  selectedAssignment?: ResourceAssignment;
+  comment: string;
+  setComment: (value: string) => void;
+  addComment: () => void;
+  approveSelectedOverride: () => void;
+}) {
+  const approvals = assignments.filter((assignment) => {
+    if (!assignment.personId || assignment.type === "Leave") return false;
+    const days = businessDays(assignment.start, 5);
+    return assignment.status === "At Risk" || assignment.status === "Waiting List" || days.some((day) => getBookedPct(assignments, assignment.personId ?? "", day, false) > getAvailablePct(assignments, assignment.personId ?? "", day));
+  });
+  return (
+    <div className="grid grid-cols-1 gap-6 xl:grid-cols-[420px_1fr]">
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="flex items-center gap-2 text-lg font-bold text-slate-950"><ShieldCheck size={18} /> Approval queue</h2>
+        <div className="mt-4 space-y-3">
+          {approvals.map((assignment) => {
+            const person = resourcePeople.find((item) => item.id === assignment.personId);
+            return (
+              <div key={assignment.id} className="rounded-xl border border-red-200 bg-red-50 p-4">
+                <div className="font-bold text-red-950">{person?.name} · {assignment.role}</div>
+                <div className="mt-1 text-sm text-red-800">{assignment.status} · {pct(assignment.allocationPct)} · {formatDate(assignment.start)} to {formatDate(assignment.end)}</div>
+                {selectedAssignment?.id === assignment.id && <button onClick={approveSelectedOverride} className="mt-3 rounded-lg bg-red-700 px-3 py-2 text-sm font-semibold text-white">Approve selected exception</button>}
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-5 rounded-xl border border-slate-200 p-4">
+          <h3 className="flex items-center gap-2 font-bold text-slate-950"><MessageSquare size={16} /> Comments and mentions</h3>
+          <textarea value={comment} onChange={(event) => setComment(event.target.value)} className="mt-3 h-24 w-full rounded-lg border border-slate-300 p-3 text-sm" />
+          <button onClick={addComment} className="mt-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Add comment</button>
+        </div>
+      </section>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h2 className="text-lg font-bold text-slate-950">Audit history</h2>
+        <div className="mt-4 space-y-3">
+          {audit.map((entry) => (
+            <div key={entry.id} className="rounded-xl border border-slate-200 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-bold text-slate-950">{entry.action}</span><span className="text-xs text-slate-500">{entry.at}</span></div>
+              <div className="mt-1 text-sm text-slate-600">{entry.summary}</div>
+              <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{entry.actor} · {entry.record}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
