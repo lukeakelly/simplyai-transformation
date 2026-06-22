@@ -18,6 +18,7 @@ import {
   Sparkles,
   SplitSquareHorizontal,
   UserCheck,
+  UserPlus,
 } from "lucide-react";
 import {
   TODAY,
@@ -58,6 +59,34 @@ type MatchResult = {
   skillFit: number;
   availabilityFit: number;
   explanation: string[];
+};
+
+type NewMemberDraft = {
+  name: string;
+  role: string;
+  level: string;
+  pillar: string;
+  manager: string;
+  location: string;
+  employmentType: string;
+  dailyCapacityHours: string;
+  skills: string;
+  billRate: string;
+  costRate: string;
+};
+
+const defaultNewMemberDraft: NewMemberDraft = {
+  name: "",
+  role: "Data Engineer",
+  level: "Consultant",
+  pillar: "Data & AI",
+  manager: "Maya Chen",
+  location: "Sydney",
+  employmentType: "Permanent",
+  dailyCapacityHours: "8",
+  skills: "Python, Databricks",
+  billRate: "1500",
+  costRate: "700",
 };
 
 const tabs: { id: Tab; label: string }[] = [
@@ -125,22 +154,22 @@ function getAvailablePct(assignments: ResourceAssignment[], personId: string, da
   return Math.max(0, 100 - getLeavePct(assignments, personId, date));
 }
 
-function getAssignmentRevenue(assignment: ResourceAssignment) {
-  const person = resourcePeople.find((item) => item.id === assignment.personId);
+function getAssignmentRevenue(assignment: ResourceAssignment, people: ResourcePerson[] = resourcePeople) {
+  const person = people.find((item) => item.id === assignment.personId);
   if (!person || assignment.type === "Leave" || assignment.type === "Bench") return 0;
   const days = assignmentDurationDays(assignment) + 1;
   return days * person.billRate * (assignment.allocationPct / 100);
 }
 
-function getAssignmentMargin(assignment: ResourceAssignment) {
-  const person = resourcePeople.find((item) => item.id === assignment.personId);
+function getAssignmentMargin(assignment: ResourceAssignment, people: ResourcePerson[] = resourcePeople) {
+  const person = people.find((item) => item.id === assignment.personId);
   if (!person || assignment.type === "Leave" || assignment.type === "Bench") return 0;
   const days = assignmentDurationDays(assignment) + 1;
   return days * (person.billRate - person.costRate) * (assignment.allocationPct / 100);
 }
 
-function matchCandidates(demand: ResourceDemand, assignments: ResourceAssignment[]): MatchResult[] {
-  return resourcePeople
+function matchCandidates(demand: ResourceDemand, assignments: ResourceAssignment[], people: ResourcePerson[]): MatchResult[] {
+  return people
     .filter((person) => person.employmentType !== "Corporate")
     .map((person) => {
       const matchingSkills = demand.requiredSkills.filter((skill) => person.skills.includes(skill));
@@ -179,11 +208,11 @@ function decodeDrag(value: string): DragPayload | null {
   }
 }
 
-function buildExport(assignments: ResourceAssignment[]) {
+function buildExport(assignments: ResourceAssignment[], people: ResourcePerson[]) {
   const rows = [
     ["person_id", "person", "client", "project", "assignment_type", "status", "role", "start", "end", "allocation_pct", "source"],
     ...assignments.map((assignment) => {
-      const person = resourcePeople.find((item) => item.id === assignment.personId);
+      const person = people.find((item) => item.id === assignment.personId);
       const project = assignmentProject(assignment);
       return [
         assignment.personId ?? "UNFILLED",
@@ -205,6 +234,7 @@ function buildExport(assignments: ResourceAssignment[]) {
 
 export function ResourceCommandCentreClient() {
   const [activeTab, setActiveTab] = useState<Tab>("centre");
+  const [people, setPeople] = useState<ResourcePerson[]>(resourcePeople);
   const [assignments, setAssignments] = useState<ResourceAssignment[]>(resourceAssignments);
   const [audit, setAudit] = useState<AuditEntry[]>(auditEntries);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>(resourceAssignments[0]?.id ?? "");
@@ -217,16 +247,17 @@ export function ResourceCommandCentreClient() {
   const [financeVisible, setFinanceVisible] = useState(true);
   const [overrideReason, setOverrideReason] = useState("Delivery continuity approved by COO");
   const [comment, setComment] = useState("@Maya please review this clash before Friday.");
+  const [newMemberDraft, setNewMemberDraft] = useState<NewMemberDraft>(defaultNewMemberDraft);
 
   const scheduleDays = useMemo(() => businessDays(TODAY, 15), []);
   const selectedAssignment = assignments.find((assignment) => assignment.id === selectedAssignmentId) ?? assignments[0];
   const selectedDemand = resourceDemands.find((demand) => demand.id === selectedDemandId) ?? resourceDemands[0];
-  const selectedMatches = useMemo(() => matchCandidates(selectedDemand, assignments), [assignments, selectedDemand]);
-  const pillars = [...new Set(resourcePeople.map((person) => person.pillar))];
-  const skills = [...new Set(resourcePeople.flatMap((person) => person.skills))].sort();
+  const selectedMatches = useMemo(() => matchCandidates(selectedDemand, assignments, people), [assignments, people, selectedDemand]);
+  const pillars = [...new Set(people.map((person) => person.pillar))];
+  const skills = [...new Set(people.flatMap((person) => person.skills))].sort();
 
-  const filteredPeople = resourcePeople.filter((person) => {
-    const haystack = `${person.name} ${person.role} ${person.level} ${person.manager} ${person.location}`.toLowerCase();
+  const filteredPeople = people.filter((person) => {
+    const haystack = `${person.employeeNo} ${person.name} ${person.role} ${person.level} ${person.manager} ${person.location} ${person.skills.join(" ")}`.toLowerCase();
     if (search && !haystack.includes(search.toLowerCase())) return false;
     if (pillar && person.pillar !== pillar) return false;
     if (skill && !person.skills.includes(skill)) return false;
@@ -240,7 +271,7 @@ export function ResourceCommandCentreClient() {
     let leave = 0;
     let overAllocatedCells = 0;
     let benchCells = 0;
-    for (const person of resourcePeople) {
+    for (const person of people) {
       for (const day of days) {
         const availablePct = getAvailablePct(assignments, person.id, day);
         const bookedPct = getBookedPct(assignments, person.id, day, false);
@@ -255,7 +286,7 @@ export function ResourceCommandCentreClient() {
     const weightedPipeline = resourceDemands.reduce((total, demand) => total + demand.allocationPct * (demand.confidence / 100), 0);
     const endingSoon = assignments.filter((assignment) => assignment.end >= TODAY && assignment.end <= addDays(TODAY, 21) && assignment.type !== "Leave").length;
     return { utilisation, available, booked, leave, overAllocatedCells, benchCells, weightedPipeline: Math.round(weightedPipeline), endingSoon };
-  }, [assignments]);
+  }, [assignments, people]);
 
   function appendAudit(action: string, record: string, summary: string) {
     const next: AuditEntry = {
@@ -273,6 +304,38 @@ export function ResourceCommandCentreClient() {
       }).format(new Date()),
     };
     setAudit((items) => [next, ...items]);
+  }
+
+  function addTeamMember() {
+    const name = newMemberDraft.name.trim();
+    if (!name) return;
+    const nextNumber = people.length + 1;
+    const skills = newMemberDraft.skills
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const created: ResourcePerson = {
+      id: `p-custom-${Date.now()}`,
+      employeeNo: `SIA-${String(nextNumber).padStart(3, "0")}`,
+      name,
+      role: newMemberDraft.role.trim() || "Consultant",
+      level: newMemberDraft.level.trim() || "Consultant",
+      pillar: newMemberDraft.pillar.trim() || "Unassigned",
+      manager: newMemberDraft.manager.trim() || "Unassigned",
+      location: newMemberDraft.location.trim() || "Unassigned",
+      employmentType: newMemberDraft.employmentType.trim() || "Permanent",
+      dailyCapacityHours: Number(newMemberDraft.dailyCapacityHours) || 8,
+      skills: skills.length > 0 ? skills : ["Unspecified"],
+      certifications: [],
+      billRate: Number(newMemberDraft.billRate) || 0,
+      costRate: Number(newMemberDraft.costRate) || 0,
+      tags: ["new-team-member"],
+    };
+    setPeople((items) => [...items, created]);
+    setSearch(name);
+    setActiveTab("people");
+    setNewMemberDraft(defaultNewMemberDraft);
+    appendAudit("Added team member", created.name, `${created.employeeNo} added to ${created.pillar} with ${created.skills.join(", ")}.`);
   }
 
   function moveAssignment(assignmentId: string, personId: string, date: string) {
@@ -390,7 +453,7 @@ export function ResourceCommandCentreClient() {
   }
 
   function downloadCsv() {
-    const blob = new Blob([buildExport(assignments)], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([buildExport(assignments, people)], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -445,7 +508,7 @@ export function ResourceCommandCentreClient() {
 
       <main className="space-y-6 p-6">
         <FilterBar search={search} setSearch={setSearch} pillar={pillar} setPillar={setPillar} skill={skill} setSkill={setSkill} status={status} setStatus={setStatus} pillars={pillars} skills={skills} />
-        {activeTab === "centre" && <CommandCentre assignments={assignments} dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} />}
+        {activeTab === "centre" && <CommandCentre assignments={assignments} people={people} dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} />}
         {activeTab === "schedule" && (
           <Schedule
             assignments={assignments}
@@ -468,10 +531,10 @@ export function ResourceCommandCentreClient() {
         {activeTab === "demand" && (
           <DemandPanel assignments={assignments} selectedDemandId={selectedDemandId} setSelectedDemandId={setSelectedDemandId} selectedMatches={selectedMatches} createAssignmentFromDemand={createAssignmentFromDemand} />
         )}
-        {activeTab === "people" && <PeopleDirectory people={filteredPeople} assignments={assignments} financeVisible={financeVisible} />}
+        {activeTab === "people" && <PeopleDirectory people={filteredPeople} assignments={assignments} financeVisible={financeVisible} draft={newMemberDraft} setDraft={setNewMemberDraft} addTeamMember={addTeamMember} />}
         {activeTab === "bench" && <BenchView people={filteredPeople} assignments={assignments} />}
         {activeTab === "migration" && <MigrationReview />}
-        {activeTab === "approvals" && <ApprovalsAudit assignments={assignments} audit={audit} selectedAssignment={selectedAssignment} comment={comment} setComment={setComment} addComment={addComment} approveSelectedOverride={approveSelectedOverride} />}
+        {activeTab === "approvals" && <ApprovalsAudit assignments={assignments} people={people} audit={audit} selectedAssignment={selectedAssignment} comment={comment} setComment={setComment} addComment={addComment} approveSelectedOverride={approveSelectedOverride} />}
       </main>
     </div>
   );
@@ -541,17 +604,19 @@ function FilterBar({
 
 function CommandCentre({
   assignments,
+  people,
   dashboard,
   financeVisible,
   setActiveTab,
 }: {
   assignments: ResourceAssignment[];
+  people: ResourcePerson[];
   dashboard: { utilisation: number; available: number; booked: number; leave: number; overAllocatedCells: number; benchCells: number; weightedPipeline: number; endingSoon: number };
   financeVisible: boolean;
   setActiveTab: (tab: Tab) => void;
 }) {
-  const revenue = assignments.reduce((total, assignment) => total + getAssignmentRevenue(assignment), 0);
-  const margin = assignments.reduce((total, assignment) => total + getAssignmentMargin(assignment), 0);
+  const revenue = assignments.reduce((total, assignment) => total + getAssignmentRevenue(assignment, people), 0);
+  const margin = assignments.reduce((total, assignment) => total + getAssignmentMargin(assignment, people), 0);
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
@@ -745,7 +810,7 @@ function Schedule({
       <aside className="space-y-4">
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="flex items-center gap-2 text-base font-bold text-slate-950"><PanelRightOpen size={18} /> Assignment drawer</h3>
-          {selectedAssignment ? <AssignmentDrawer assignment={selectedAssignment} resizeAssignment={resizeAssignment} splitAssignment={splitAssignment} approveSelectedOverride={approveSelectedOverride} overrideReason={overrideReason} setOverrideReason={setOverrideReason} /> : <p className="mt-3 text-sm text-slate-500">Select an assignment to inspect details.</p>}
+          {selectedAssignment ? <AssignmentDrawer assignment={selectedAssignment} people={people} resizeAssignment={resizeAssignment} splitAssignment={splitAssignment} approveSelectedOverride={approveSelectedOverride} overrideReason={overrideReason} setOverrideReason={setOverrideReason} /> : <p className="mt-3 text-sm text-slate-500">Select an assignment to inspect details.</p>}
         </section>
         {conflict && (
           <section className="rounded-2xl border-2 border-red-300 bg-red-50 p-5 shadow-sm">
@@ -795,6 +860,7 @@ function Schedule({
 
 function AssignmentDrawer({
   assignment,
+  people,
   resizeAssignment,
   splitAssignment,
   approveSelectedOverride,
@@ -802,13 +868,14 @@ function AssignmentDrawer({
   setOverrideReason,
 }: {
   assignment: ResourceAssignment;
+  people: ResourcePerson[];
   resizeAssignment: (days: number) => void;
   splitAssignment: () => void;
   approveSelectedOverride: () => void;
   overrideReason: string;
   setOverrideReason: (value: string) => void;
 }) {
-  const person = resourcePeople.find((item) => item.id === assignment.personId);
+  const person = people.find((item) => item.id === assignment.personId);
   const project = assignmentProject(assignment);
   return (
     <div className="mt-4 space-y-4">
@@ -822,8 +889,8 @@ function AssignmentDrawer({
         <DrawerField label="Status" value={assignment.status} />
         <DrawerField label="Billability" value={assignment.type} />
         <DrawerField label="Confidence" value={pct(assignment.confidence)} />
-        <DrawerField label="Revenue" value={money(getAssignmentRevenue(assignment))} />
-        <DrawerField label="Margin" value={money(getAssignmentMargin(assignment))} />
+        <DrawerField label="Revenue" value={money(getAssignmentRevenue(assignment, people))} />
+        <DrawerField label="Margin" value={money(getAssignmentMargin(assignment, people))} />
       </div>
       <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{assignment.notes}</div>
       {assignment.override && (
@@ -915,12 +982,37 @@ function DemandPanel({
   );
 }
 
-function PeopleDirectory({ people, assignments, financeVisible }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; financeVisible: boolean }) {
+function PeopleDirectory({ people, assignments, financeVisible, draft, setDraft, addTeamMember }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; financeVisible: boolean; draft: NewMemberDraft; setDraft: (draft: NewMemberDraft) => void; addTeamMember: () => void }) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-200 px-5 py-4">
         <h2 className="text-lg font-bold text-slate-950">People & skills directory</h2>
         <p className="text-sm text-slate-500">Stable IDs, working patterns, skills, certifications, locations and controlled rate visibility.</p>
+      </div>
+      <div className="border-b border-slate-200 bg-slate-50 p-5">
+        <div className="mb-3 flex items-center gap-2 font-bold text-slate-950">
+          <UserPlus size={18} /> Add team member
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <MemberInput label="Name" value={draft.name} onChange={(value) => setDraft({ ...draft, name: value })} placeholder="e.g. Morgan Lee" />
+          <MemberInput label="Role" value={draft.role} onChange={(value) => setDraft({ ...draft, role: value })} />
+          <MemberInput label="Level" value={draft.level} onChange={(value) => setDraft({ ...draft, level: value })} />
+          <MemberInput label="Pillar" value={draft.pillar} onChange={(value) => setDraft({ ...draft, pillar: value })} />
+          <MemberInput label="Manager" value={draft.manager} onChange={(value) => setDraft({ ...draft, manager: value })} />
+          <MemberInput label="Location" value={draft.location} onChange={(value) => setDraft({ ...draft, location: value })} />
+          <MemberInput label="Employment type" value={draft.employmentType} onChange={(value) => setDraft({ ...draft, employmentType: value })} />
+          <MemberInput label="Daily hours" value={draft.dailyCapacityHours} onChange={(value) => setDraft({ ...draft, dailyCapacityHours: value })} />
+          <MemberInput label="Skills" value={draft.skills} onChange={(value) => setDraft({ ...draft, skills: value })} className="xl:col-span-2" />
+          <MemberInput label="Bill rate" value={draft.billRate} onChange={(value) => setDraft({ ...draft, billRate: value })} />
+          <MemberInput label="Cost rate" value={draft.costRate} onChange={(value) => setDraft({ ...draft, costRate: value })} />
+        </div>
+        <button
+          onClick={addTeamMember}
+          disabled={!draft.name.trim()}
+          className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <UserPlus size={16} /> Add team member
+        </button>
       </div>
       <div className="overflow-auto">
         <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -954,6 +1046,20 @@ function PeopleDirectory({ people, assignments, financeVisible }: { people: Reso
         </table>
       </div>
     </section>
+  );
+}
+
+function MemberInput({ label, value, onChange, placeholder, className = "" }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; className?: string }) {
+  return (
+    <label className={`block ${className}`}>
+      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">{label}</span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none"
+      />
+    </label>
   );
 }
 
@@ -1029,6 +1135,7 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
 
 function ApprovalsAudit({
   assignments,
+  people,
   audit,
   selectedAssignment,
   comment,
@@ -1037,6 +1144,7 @@ function ApprovalsAudit({
   approveSelectedOverride,
 }: {
   assignments: ResourceAssignment[];
+  people: ResourcePerson[];
   audit: AuditEntry[];
   selectedAssignment?: ResourceAssignment;
   comment: string;
@@ -1055,7 +1163,7 @@ function ApprovalsAudit({
         <h2 className="flex items-center gap-2 text-lg font-bold text-slate-950"><ShieldCheck size={18} /> Approval queue</h2>
         <div className="mt-4 space-y-3">
           {approvals.map((assignment) => {
-            const person = resourcePeople.find((item) => item.id === assignment.personId);
+            const person = people.find((item) => item.id === assignment.personId);
             return (
               <div key={assignment.id} className="rounded-xl border border-red-200 bg-red-50 p-4">
                 <div className="font-bold text-red-950">{person?.name} · {assignment.role}</div>
