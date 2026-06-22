@@ -7,6 +7,7 @@ import {
   ListChecks,
   CalendarRange,
   Users,
+  BriefcaseBusiness,
   Sparkles,
   Menu,
   X,
@@ -25,6 +26,7 @@ const BASE_NAV = [
   { href: "/tasks", label: "Tasks", icon: ListChecks },
   { href: "/timeline", label: "Timeline", icon: CalendarRange },
   { href: "/owners", label: "Owners", icon: Users },
+  { href: "/resource-command-centre", label: "Resources", icon: BriefcaseBusiness },
   { href: "/ask", label: "Ask", icon: Sparkles },
 ];
 
