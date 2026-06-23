@@ -5,11 +5,17 @@ import { FileMLVizzProvider } from "../src/integrations/mlvizz/file-provider";
 import { MockMLVizzProvider } from "../src/integrations/mlvizz/mock-provider";
 import { validateMLVizzSnapshot } from "../src/integrations/mlvizz/validation";
 import { buildMLVizzSyncPlan } from "../src/integrations/mlvizz/sync-service";
+import { buildResourceDashboardKpis } from "../src/lib/resource-command-kpis";
+import { TODAY, financialActuals, resourceAssignments, resourceDemands, resourcePeople, timesheetActuals } from "../src/lib/resource-command-data";
 
 const packs = ["nominal-small", "functional-demo", "edge-cases"] as const;
 
 function assert(condition: boolean, message: string) {
   if (!condition) throw new Error(message);
+}
+
+function assertEqual<T>(actual: T, expected: T, message: string) {
+  assert(actual === expected, `${message}: expected ${String(expected)}, got ${String(actual)}`);
 }
 
 function snapshotShape(snapshot: MLVizzSnapshot) {
@@ -48,6 +54,28 @@ async function main() {
   const secondPlan = await buildMLVizzSyncPlan(fileProvider, { correlationId: "sync-test-2", lastSnapshotId: null, startedAt: new Date(0).toISOString() });
   assert(firstPlan.acceptedRecords === secondPlan.acceptedRecords, "Rerunning the same input should produce an idempotent accepted count");
   assert(firstPlan.rejectedRecords === secondPlan.rejectedRecords, "Rerunning the same input should produce an idempotent rejected count");
+
+  const next30Kpis = buildResourceDashboardKpis({
+    today: TODAY,
+    people: resourcePeople,
+    assignments: resourceAssignments,
+    demands: resourceDemands,
+    timesheetActuals,
+    financialActuals,
+    windowBusinessDays: 30,
+  });
+  assertEqual(next30Kpis.availableHours, 2868, "30-day available hours should be normalized from daily capacity minus leave");
+  assertEqual(next30Kpis.utilisationPct, 22, "30-day utilisation should be committed billable/managed-service hours divided by available hours");
+  assertEqual(next30Kpis.tentativePct, 4, "30-day tentative utilisation should be tracked separately");
+  assertEqual(next30Kpis.pipelineWeightedPersonDays, 67.3, "Pipeline demand should be confidence-weighted FTE-days");
+  assertEqual(next30Kpis.pipelineCapacityPct, 19, "Pipeline demand should be capacity-relative");
+  assertEqual(next30Kpis.overAllocatedHours, 80, "Over-allocation should be excess hours, not raw percent totals");
+  assertEqual(next30Kpis.overAllocatedPersonDays, 10, "Over-allocation should retain person-day exception count");
+  assertEqual(next30Kpis.benchPersonDays, 201, "Bench capacity should be remaining person-days after scheduled work and leave");
+  assertEqual(next30Kpis.submittedTimesheetHours, 48, "Submitted timesheets should remain separate from planned allocation KPIs");
+  assertEqual(next30Kpis.approvedTimesheetHours, 38.4, "Approved timesheets should remain separate from planned allocation KPIs");
+  assertEqual(next30Kpis.invoicedRevenue, 184000, "Invoiced actuals should come from financial actuals");
+  assertEqual(next30Kpis.paidRevenue, 60000, "Paid actuals should come from financial actuals");
 
   console.log("MLVizz provider contract tests passed");
 }

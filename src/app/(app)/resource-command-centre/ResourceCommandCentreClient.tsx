@@ -47,6 +47,7 @@ import {
   type ResourceDemand,
   type ResourcePerson,
 } from "@/lib/resource-command-data";
+import { buildResourceDashboardKpis, formatFteDays, type ResourceDashboardKpis } from "@/lib/resource-command-kpis";
 import { saveResourcePlanningEvent } from "./actions";
 
 type Tab = "centre" | "schedule" | "demand" | "people" | "bench" | "migration" | "approvals";
@@ -127,6 +128,14 @@ const statusClasses: Record<AssignmentStatus, string> = {
 
 function pct(value: number) {
   return `${Math.round(value)}%`;
+}
+
+function formatTimestamp(value: string) {
+  return new Intl.DateTimeFormat("en-AU", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "Australia/Sydney",
+  }).format(new Date(value));
 }
 
 function assignmentDurationDays(assignment: ResourceAssignment) {
@@ -272,27 +281,21 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
   });
 
   const dashboard = useMemo(() => {
-    const days = businessDays(TODAY, 30);
-    let available = 0;
-    let booked = 0;
-    let leave = 0;
-    let overAllocatedCells = 0;
-    let benchCells = 0;
-    for (const person of people) {
-      for (const day of days) {
-        const availablePct = getAvailablePct(assignments, person.id, day);
-        const bookedPct = getBookedPct(assignments, person.id, day, false);
-        available += availablePct;
-        booked += Math.min(bookedPct, availablePct);
-        leave += getLeavePct(assignments, person.id, day);
-        if (bookedPct > availablePct) overAllocatedCells += 1;
-        if (availablePct - bookedPct >= 50) benchCells += 1;
-      }
-    }
-    const utilisation = available === 0 ? 0 : Math.round((booked / available) * 100);
-    const weightedPipeline = resourceDemands.reduce((total, demand) => total + demand.allocationPct * (demand.confidence / 100), 0);
-    const endingSoon = assignments.filter((assignment) => assignment.end >= TODAY && assignment.end <= addDays(TODAY, 21) && assignment.type !== "Leave").length;
-    return { utilisation, available, booked, leave, overAllocatedCells, benchCells, weightedPipeline: Math.round(weightedPipeline), endingSoon };
+    const buildWindow = (windowBusinessDays: number) =>
+      buildResourceDashboardKpis({
+        today: TODAY,
+        people,
+        assignments,
+        demands: resourceDemands,
+        timesheetActuals,
+        financialActuals,
+        windowBusinessDays,
+      });
+    return {
+      today: buildWindow(1),
+      next30: buildWindow(30),
+      next90: buildWindow(90),
+    };
   }, [assignments, people]);
 
   function appendAudit(action: string, record: string, summary: string) {
@@ -567,7 +570,7 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
       <main className="space-y-6 p-6">
         <FreshnessBanner />
         <FilterBar search={search} setSearch={setSearch} pillar={pillar} setPillar={setPillar} skill={skill} setSkill={setSkill} status={status} setStatus={setStatus} pillars={pillars} skills={skills} />
-        {activeTab === "centre" && <CommandCentre assignments={assignments} people={people} dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} />}
+        {activeTab === "centre" && <CommandCentre dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} />}
         {activeTab === "schedule" && (
           <Schedule
             assignments={assignments}
@@ -610,8 +613,8 @@ function FreshnessBanner() {
             <Clock3 size={16} /> MLVizz freshness and last-known-good status
           </h2>
           <p className="mt-1 text-sm text-slate-600">
-            Pack {mlvizzSnapshot.metadata.packId}; published {new Date(mlvizzSnapshot.metadata.mlvizzPublishedAt).toLocaleString("en-AU")}; app ingested{" "}
-            {new Date(mlvizzSnapshot.metadata.applicationIngestedAt).toLocaleString("en-AU")}. Planning edits are saved in the app database immediately.
+            Pack {mlvizzSnapshot.metadata.packId}; published {formatTimestamp(mlvizzSnapshot.metadata.mlvizzPublishedAt)}; app ingested{" "}
+            {formatTimestamp(mlvizzSnapshot.metadata.applicationIngestedAt)}. Planning edits are saved in the app database immediately.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -700,29 +703,24 @@ function FilterBar({
 }
 
 function CommandCentre({
-  assignments,
-  people,
   dashboard,
   financeVisible,
   setActiveTab,
 }: {
-  assignments: ResourceAssignment[];
-  people: ResourcePerson[];
-  dashboard: { utilisation: number; available: number; booked: number; leave: number; overAllocatedCells: number; benchCells: number; weightedPipeline: number; endingSoon: number };
+  dashboard: { today: ResourceDashboardKpis; next30: ResourceDashboardKpis; next90: ResourceDashboardKpis };
   financeVisible: boolean;
   setActiveTab: (tab: Tab) => void;
 }) {
-  const revenue = assignments.reduce((total, assignment) => total + getAssignmentRevenue(assignment, people), 0);
-  const margin = assignments.reduce((total, assignment) => total + getAssignmentMargin(assignment, people), 0);
+  const kpis = dashboard.next30;
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label="30-day utilisation" value={pct(dashboard.utilisation)} sub={`${pct(dashboard.booked)} booked of ${pct(dashboard.available)} available units`} icon={<UserCheck size={18} />} />
-        <MetricCard label="Weighted pipeline" value={`${dashboard.weightedPipeline}%`} sub="Demand weighted by confidence" icon={<Sparkles size={18} />} />
-        <MetricCard label="Over-allocation" value={dashboard.overAllocatedCells} sub="Person-day cells needing action" tone="danger" icon={<AlertTriangle size={18} />} />
-        <MetricCard label="Bench capacity" value={dashboard.benchCells} sub="Cells with 50%+ capacity" tone="amber" icon={<Clock3 size={18} />} />
-        <MetricCard label="Ending soon" value={dashboard.endingSoon} sub="Assignments ending within 21 days" icon={<ArrowRightLeft size={18} />} />
-        <MetricCard label="Forecast margin" value={financeVisible ? money(margin) : "Restricted"} sub={financeVisible ? `${money(revenue)} revenue` : "Finance-only field"} icon={<Lock size={18} />} />
+        <MetricCard label="30-day billable util." value={pct(kpis.utilisationPct)} sub={`${formatFteDays(kpis.committedDeliveryHours)} committed of ${formatFteDays(kpis.availableHours)} available`} icon={<UserCheck size={18} />} />
+        <MetricCard label="Pipeline demand" value={formatFteDays(kpis.pipelineWeightedHours)} sub={`${pct(kpis.pipelineCapacityPct)} of 30-day capacity after confidence weighting`} icon={<Sparkles size={18} />} />
+        <MetricCard label="Over-allocation" value={formatFteDays(kpis.overAllocatedHours)} sub={`${kpis.overAllocatedPersonDays} person-days above available capacity`} tone="danger" icon={<AlertTriangle size={18} />} />
+        <MetricCard label="Bench capacity" value={formatFteDays(kpis.benchHours)} sub="Available person-days after scheduled work and leave" tone="amber" icon={<Clock3 size={18} />} />
+        <MetricCard label="Ending soon" value={kpis.endingSoon} sub="Confirmed/tentative assignments ending within 21 days" icon={<ArrowRightLeft size={18} />} />
+        <MetricCard label="Paid actuals" value={financeVisible ? money(kpis.paidRevenue) : "Restricted"} sub={financeVisible ? `${money(kpis.invoicedRevenue)} invoiced net` : "Finance-only field"} icon={<Lock size={18} />} />
       </div>
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
@@ -734,9 +732,9 @@ function CommandCentre({
             <button onClick={() => setActiveTab("schedule")} className="rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Open schedule</button>
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <CapacityBand label="Today" available="87%" committed="76%" tentative="9%" />
-            <CapacityBand label="Next 30 days" available="82%" committed={`${dashboard.utilisation}%`} tentative="14%" />
-            <CapacityBand label="Next 90 days" available="69%" committed="58%" tentative="21%" />
+            <CapacityBand label="Today" available={pct(dashboard.today.availabilityPct)} committed={pct(dashboard.today.utilisationPct)} tentative={pct(dashboard.today.tentativePct)} />
+            <CapacityBand label="Next 30 days" available={pct(kpis.availabilityPct)} committed={pct(kpis.utilisationPct)} tentative={pct(kpis.tentativePct)} />
+            <CapacityBand label="Next 90 days" available={pct(dashboard.next90.availabilityPct)} committed={pct(dashboard.next90.utilisationPct)} tentative={pct(dashboard.next90.tentativePct)} />
           </div>
           <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
             Weekly digest: resolve Charlie’s 140% clash, confirm Ben’s CBA/Powerlink alternative, and fill Cleanaway’s 60% Data Engineer demand before 18 Jul.
@@ -1232,7 +1230,7 @@ function MigrationReview() {
                 <span className="font-bold text-slate-900">{item.datasetName} / {item.sourceSystem}</span>
                 <span className={item.status === "failed" ? "text-red-700" : item.status === "fresh" ? "text-emerald-700" : "text-amber-700"}>{item.status}</span>
               </div>
-              <p className="mt-1">Accepted {item.recordsAccepted}; rejected {item.recordsRejected}; last success {new Date(item.lastSuccessfulRefreshAt).toLocaleString("en-AU")}.</p>
+              <p className="mt-1">Accepted {item.recordsAccepted}; rejected {item.recordsRejected}; last success {formatTimestamp(item.lastSuccessfulRefreshAt)}.</p>
               {item.failureSummary && <p className="mt-1 font-semibold text-amber-700">{item.failureSummary}</p>}
             </div>
           ))}
