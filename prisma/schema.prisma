@@ -111,3 +111,81 @@ model Comment {
 
   @@index([taskId])
 }
+
+model ResourcePlannedAllocation {
+  id                    String   @id @default(cuid())
+  canonicalAllocationId String   @unique
+  canonicalPersonId     String?
+  canonicalProjectId    String
+  canonicalRequestId    String?
+  status                String
+  allocationType        String
+  role                  String
+  startDate             DateTime
+  endDate               DateTime
+  allocationPct         Int
+  confidencePct         Int
+  payload               Json
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([canonicalPersonId])
+  @@index([canonicalProjectId])
+  @@index([status])
+}
+
+model ResourceSyncRun {
+  id                 String   @id @default(cuid())
+  refreshRunId       String   @unique
+  datasetName        String
+  sourceSystem       String
+  status             String
+  dataQualityStatus  String
+  recordsRead        Int
+  recordsAccepted    Int
+  recordsRejected    Int
+  lastSuccessfulAt   DateTime?
+  mlvizzPublishedAt  DateTime?
+  failureSummary     String?
+  rawPayload         Json
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([datasetName])
+  @@index([sourceSystem])
+  @@index([status])
+}
+
+model ResourceFailedRecord {
+  id              String   @id @default(cuid())
+  failedRecordId  String   @unique
+  refreshRunId    String
+  datasetName     String
+  sourceSystem    String
+  sourceRecordId  String
+  failureReason   String
+  reprocessStatus String
+  rawPayload      Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([refreshRunId])
+  @@index([datasetName])
+  @@index([reprocessStatus])
+}
+
+model ResourceOutboundEvent {
+  id            String    @id @default(cuid())
+  eventType     String
+  sourceRecordId String
+  status        String    @default("pending")
+  correlationId String
+  payload       Json
+  publishedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([eventType])
+  @@index([status])
+  @@index([correlationId])
+}

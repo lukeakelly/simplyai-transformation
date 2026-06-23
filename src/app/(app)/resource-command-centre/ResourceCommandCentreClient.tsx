@@ -26,14 +26,20 @@ import {
   assignmentProject,
   auditEntries,
   businessDays,
+  financialActuals,
   formatDate,
+  identityMappings,
   migrationIssues,
+  mlvizzFreshness,
+  mlvizzSnapshot,
   money,
   overlaps,
+  reconciliationSummaries,
   resourceAssignments,
   resourceDemands,
   resourcePeople,
   resourceProjects,
+  timesheetActuals,
   type AssignmentStatus,
   type AssignmentType,
   type AuditEntry,
@@ -41,6 +47,8 @@ import {
   type ResourceDemand,
   type ResourcePerson,
 } from "@/lib/resource-command-data";
+import { buildResourceDashboardKpis, formatFteDays, type ResourceDashboardKpis } from "@/lib/resource-command-kpis";
+import { saveResourcePlanningEvent } from "./actions";
 
 type Tab = "centre" | "schedule" | "demand" | "people" | "bench" | "migration" | "approvals";
 type DragPayload = { kind: "assignment"; id: string } | { kind: "demand"; id: string };
@@ -95,7 +103,7 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "demand", label: "Demand & Pipeline" },
   { id: "people", label: "People & Skills" },
   { id: "bench", label: "Bench" },
-  { id: "migration", label: "Migration Review" },
+  { id: "migration", label: "MLVizz Sync" },
   { id: "approvals", label: "Approvals & Audit" },
 ];
 
@@ -120,6 +128,14 @@ const statusClasses: Record<AssignmentStatus, string> = {
 
 function pct(value: number) {
   return `${Math.round(value)}%`;
+}
+
+function formatTimestamp(value: string) {
+  return new Intl.DateTimeFormat("en-AU", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "Australia/Sydney",
+  }).format(new Date(value));
 }
 
 function assignmentDurationDays(assignment: ResourceAssignment) {
@@ -232,10 +248,10 @@ function buildExport(assignments: ResourceAssignment[], people: ResourcePerson[]
   return rows.map((row) => row.map((cell) => `"${cell.replaceAll("\"", "\"\"")}"`).join(",")).join("\n");
 }
 
-export function ResourceCommandCentreClient() {
+export function ResourceCommandCentreClient({ initialAssignments }: { initialAssignments?: ResourceAssignment[] }) {
   const [activeTab, setActiveTab] = useState<Tab>("centre");
   const [people, setPeople] = useState<ResourcePerson[]>(resourcePeople);
-  const [assignments, setAssignments] = useState<ResourceAssignment[]>(resourceAssignments);
+  const [assignments, setAssignments] = useState<ResourceAssignment[]>(initialAssignments ?? resourceAssignments);
   const [audit, setAudit] = useState<AuditEntry[]>(auditEntries);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>(resourceAssignments[0]?.id ?? "");
   const [selectedDemandId, setSelectedDemandId] = useState(resourceDemands[0]?.id ?? "");
@@ -265,27 +281,21 @@ export function ResourceCommandCentreClient() {
   });
 
   const dashboard = useMemo(() => {
-    const days = businessDays(TODAY, 30);
-    let available = 0;
-    let booked = 0;
-    let leave = 0;
-    let overAllocatedCells = 0;
-    let benchCells = 0;
-    for (const person of people) {
-      for (const day of days) {
-        const availablePct = getAvailablePct(assignments, person.id, day);
-        const bookedPct = getBookedPct(assignments, person.id, day, false);
-        available += availablePct;
-        booked += Math.min(bookedPct, availablePct);
-        leave += getLeavePct(assignments, person.id, day);
-        if (bookedPct > availablePct) overAllocatedCells += 1;
-        if (availablePct - bookedPct >= 50) benchCells += 1;
-      }
-    }
-    const utilisation = available === 0 ? 0 : Math.round((booked / available) * 100);
-    const weightedPipeline = resourceDemands.reduce((total, demand) => total + demand.allocationPct * (demand.confidence / 100), 0);
-    const endingSoon = assignments.filter((assignment) => assignment.end >= TODAY && assignment.end <= addDays(TODAY, 21) && assignment.type !== "Leave").length;
-    return { utilisation, available, booked, leave, overAllocatedCells, benchCells, weightedPipeline: Math.round(weightedPipeline), endingSoon };
+    const buildWindow = (windowBusinessDays: number) =>
+      buildResourceDashboardKpis({
+        today: TODAY,
+        people,
+        assignments,
+        demands: resourceDemands,
+        timesheetActuals,
+        financialActuals,
+        windowBusinessDays,
+      });
+    return {
+      today: buildWindow(1),
+      next30: buildWindow(30),
+      next90: buildWindow(90),
+    };
   }, [assignments, people]);
 
   function appendAudit(action: string, record: string, summary: string) {
@@ -304,6 +314,36 @@ export function ResourceCommandCentreClient() {
       }).format(new Date()),
     };
     setAudit((items) => [next, ...items]);
+  }
+
+  function persistAssignment(assignment: ResourceAssignment, eventLabel: string) {
+    void saveResourcePlanningEvent({
+      eventType: "planned-allocation",
+      sourceRecordId: assignment.id,
+      correlationId: `resource-plan-${Date.now()}`,
+      canonicalAllocationId: assignment.id,
+      canonicalPersonId: assignment.personId,
+      canonicalProjectId: assignment.projectId,
+      status: assignment.status,
+      allocationType: assignment.type,
+      role: assignment.role,
+      startDate: assignment.start,
+      endDate: assignment.end,
+      allocationPct: assignment.allocationPct,
+      confidencePct: assignment.confidence,
+      payload: {
+        eventLabel,
+        assignmentId: assignment.id,
+        personId: assignment.personId,
+        projectId: assignment.projectId,
+        status: assignment.status,
+        type: assignment.type,
+        start: assignment.start,
+        end: assignment.end,
+        allocationPct: assignment.allocationPct,
+        sourceOfTruth: "resource-app",
+      },
+    });
   }
 
   function addTeamMember() {
@@ -336,22 +376,36 @@ export function ResourceCommandCentreClient() {
     setActiveTab("people");
     setNewMemberDraft(defaultNewMemberDraft);
     appendAudit("Added team member", created.name, `${created.employeeNo} added to ${created.pillar} with ${created.skills.join(", ")}.`);
+    void saveResourcePlanningEvent({
+      eventType: "team-member",
+      sourceRecordId: created.id,
+      correlationId: `resource-person-${Date.now()}`,
+      payload: {
+        personId: created.id,
+        employeeNo: created.employeeNo,
+        name: created.name,
+        role: created.role,
+        sourceOfTruth: "resource-app",
+      },
+    });
   }
 
   function moveAssignment(assignmentId: string, personId: string, date: string) {
     const current = assignments.find((assignment) => assignment.id === assignmentId);
     if (!current) return;
     const duration = assignmentDurationDays(current);
-    const targetPerson = resourcePeople.find((person) => person.id === personId);
+    const targetPerson = people.find((person) => person.id === personId);
+    const updated = { ...current, personId, start: date, end: addDays(date, duration), source: "Manual schedule drag" };
     setAssignments((items) =>
       items.map((assignment) =>
         assignment.id === assignmentId
-          ? { ...assignment, personId, start: date, end: addDays(date, duration), source: "Manual schedule drag" }
+          ? updated
           : assignment,
       ),
     );
     setSelectedAssignmentId(assignmentId);
     appendAudit("Moved assignment", targetPerson?.name ?? "Unknown person", `${current.role} moved to ${formatDate(date)}.`);
+    persistAssignment(updated, "Moved assignment");
   }
 
   function createAssignmentFromDemand(demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") {
@@ -389,7 +443,8 @@ export function ResourceCommandCentreClient() {
     setAssignments((items) => [created, ...items]);
     setSelectedAssignmentId(id);
     setConflict(null);
-    appendAudit("Created assignment", `${person.name} / ${demand.client}`, `${demand.allocationPct}% ${demand.role} created from ${demand.hubspotId}.`);
+    appendAudit("Created assignment", `${person.name} / ${demand.client}`, `${demand.allocationPct}% ${demand.role} created from canonical opportunity ${demand.sourceOpportunityId}.`);
+    persistAssignment(created, "Created assignment from demand");
   }
 
   function onDropCell(event: DragEvent<HTMLDivElement>, person: ResourcePerson, date: string) {
@@ -406,12 +461,14 @@ export function ResourceCommandCentreClient() {
 
   function resizeAssignment(days: number) {
     if (!selectedAssignment) return;
+    const updated = { ...selectedAssignment, end: addDays(selectedAssignment.end, days) };
     setAssignments((items) =>
       items.map((assignment) =>
-        assignment.id === selectedAssignment.id ? { ...assignment, end: addDays(assignment.end, days) } : assignment,
+        assignment.id === selectedAssignment.id ? updated : assignment,
       ),
     );
     appendAudit("Resized assignment", selectedAssignment.role, `${days > 0 ? "Extended" : "Shortened"} assignment by ${Math.abs(days)} day(s).`);
+    persistAssignment(updated, "Resized assignment");
   }
 
   function splitAssignment() {
@@ -429,22 +486,26 @@ export function ResourceCommandCentreClient() {
       items.map((assignment) => (assignment.id === selectedAssignment.id ? { ...assignment, end: splitDate } : assignment)).concat(second),
     );
     appendAudit("Split assignment", selectedAssignment.role, `Split at ${formatDate(splitDate)} with daily history retained.`);
+    persistAssignment({ ...selectedAssignment, end: splitDate }, "Split assignment first segment");
+    persistAssignment(second, "Split assignment second segment");
   }
 
   function approveSelectedOverride() {
     if (!selectedAssignment) return;
+    const updated = {
+      ...selectedAssignment,
+      status: "Confirmed" as const,
+      override: { reason: overrideReason, approver: "COO / Resource Manager", expiryDate: addDays(TODAY, 14) },
+    };
     setAssignments((items) =>
       items.map((assignment) =>
         assignment.id === selectedAssignment.id
-          ? {
-              ...assignment,
-              status: "Confirmed",
-              override: { reason: overrideReason, approver: "COO / Resource Manager", expiryDate: addDays(TODAY, 14) },
-            }
+          ? updated
           : assignment,
       ),
     );
     appendAudit("Approved exception", selectedAssignment.role, `${overrideReason}; expires ${formatDate(addDays(TODAY, 14))}.`);
+    persistAssignment(updated, "Approved exception");
   }
 
   function addComment() {
@@ -469,11 +530,11 @@ export function ResourceCommandCentreClient() {
         <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
-              <Sparkles size={14} /> New product MVP foundation
+              <Sparkles size={14} /> MLVizz canonical contract: {mlvizzSnapshot.metadata.schemaVersion}
             </div>
             <h1 className="mt-3 text-2xl font-bold tracking-tight text-slate-950">Simplyai Resource Command Centre</h1>
             <p className="mt-1 max-w-4xl text-sm text-slate-600">
-              Day-level resourcing, capacity, demand and utilisation control. Seeded from workbook patterns until the source workbook is attached.
+              Live planning workspace using canonical MLVizz enterprise data plus application-owned allocation, hold and approval changes saved immediately.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -507,8 +568,9 @@ export function ResourceCommandCentreClient() {
       </header>
 
       <main className="space-y-6 p-6">
+        <FreshnessBanner />
         <FilterBar search={search} setSearch={setSearch} pillar={pillar} setPillar={setPillar} skill={skill} setSkill={setSkill} status={status} setStatus={setStatus} pillars={pillars} skills={skills} />
-        {activeTab === "centre" && <CommandCentre assignments={assignments} people={people} dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} />}
+        {activeTab === "centre" && <CommandCentre dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} />}
         {activeTab === "schedule" && (
           <Schedule
             assignments={assignments}
@@ -537,6 +599,44 @@ export function ResourceCommandCentreClient() {
         {activeTab === "approvals" && <ApprovalsAudit assignments={assignments} people={people} audit={audit} selectedAssignment={selectedAssignment} comment={comment} setComment={setComment} addComment={addComment} approveSelectedOverride={approveSelectedOverride} />}
       </main>
     </div>
+  );
+}
+
+function FreshnessBanner() {
+  const failed = mlvizzFreshness.filter((item) => item.status === "failed");
+  const stale = mlvizzFreshness.filter((item) => item.status === "stale" || item.status === "warning");
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-slate-700">
+            <Clock3 size={16} /> MLVizz freshness and last-known-good status
+          </h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Pack {mlvizzSnapshot.metadata.packId}; published {formatTimestamp(mlvizzSnapshot.metadata.mlvizzPublishedAt)}; app ingested{" "}
+            {formatTimestamp(mlvizzSnapshot.metadata.applicationIngestedAt)}. Planning edits are saved in the app database immediately.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {mlvizzFreshness.slice(0, 6).map((item) => (
+            <span
+              key={`${item.datasetName}-${item.sourceSystem}`}
+              className={`rounded-full px-3 py-1 text-xs font-bold ${
+                item.status === "failed" ? "bg-red-100 text-red-700" : item.status === "warning" || item.status === "stale" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
+              }`}
+            >
+              {item.datasetName}: {item.status}
+            </span>
+          ))}
+        </div>
+      </div>
+      {(failed.length > 0 || stale.length > 0) && (
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertTriangle className="mr-2 inline" size={16} />
+          Some MLVizz datasets need review. Last-known-good data remains active and schedule edits are not blocked.
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -603,29 +703,24 @@ function FilterBar({
 }
 
 function CommandCentre({
-  assignments,
-  people,
   dashboard,
   financeVisible,
   setActiveTab,
 }: {
-  assignments: ResourceAssignment[];
-  people: ResourcePerson[];
-  dashboard: { utilisation: number; available: number; booked: number; leave: number; overAllocatedCells: number; benchCells: number; weightedPipeline: number; endingSoon: number };
+  dashboard: { today: ResourceDashboardKpis; next30: ResourceDashboardKpis; next90: ResourceDashboardKpis };
   financeVisible: boolean;
   setActiveTab: (tab: Tab) => void;
 }) {
-  const revenue = assignments.reduce((total, assignment) => total + getAssignmentRevenue(assignment, people), 0);
-  const margin = assignments.reduce((total, assignment) => total + getAssignmentMargin(assignment, people), 0);
+  const kpis = dashboard.next30;
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label="30-day utilisation" value={pct(dashboard.utilisation)} sub={`${pct(dashboard.booked)} booked of ${pct(dashboard.available)} available units`} icon={<UserCheck size={18} />} />
-        <MetricCard label="Weighted pipeline" value={`${dashboard.weightedPipeline}%`} sub="Demand weighted by confidence" icon={<Sparkles size={18} />} />
-        <MetricCard label="Over-allocation" value={dashboard.overAllocatedCells} sub="Person-day cells needing action" tone="danger" icon={<AlertTriangle size={18} />} />
-        <MetricCard label="Bench capacity" value={dashboard.benchCells} sub="Cells with 50%+ capacity" tone="amber" icon={<Clock3 size={18} />} />
-        <MetricCard label="Ending soon" value={dashboard.endingSoon} sub="Assignments ending within 21 days" icon={<ArrowRightLeft size={18} />} />
-        <MetricCard label="Forecast margin" value={financeVisible ? money(margin) : "Restricted"} sub={financeVisible ? `${money(revenue)} revenue` : "Finance-only field"} icon={<Lock size={18} />} />
+        <MetricCard label="30-day billable util." value={pct(kpis.utilisationPct)} sub={`${formatFteDays(kpis.committedDeliveryHours)} committed of ${formatFteDays(kpis.availableHours)} available`} icon={<UserCheck size={18} />} />
+        <MetricCard label="Pipeline demand" value={formatFteDays(kpis.pipelineWeightedHours)} sub={`${pct(kpis.pipelineCapacityPct)} of 30-day capacity after confidence weighting`} icon={<Sparkles size={18} />} />
+        <MetricCard label="Over-allocation" value={formatFteDays(kpis.overAllocatedHours)} sub={`${kpis.overAllocatedPersonDays} person-days above available capacity`} tone="danger" icon={<AlertTriangle size={18} />} />
+        <MetricCard label="Bench capacity" value={formatFteDays(kpis.benchHours)} sub="Available person-days after scheduled work and leave" tone="amber" icon={<Clock3 size={18} />} />
+        <MetricCard label="Ending soon" value={kpis.endingSoon} sub="Confirmed/tentative assignments ending within 21 days" icon={<ArrowRightLeft size={18} />} />
+        <MetricCard label="Paid actuals" value={financeVisible ? money(kpis.paidRevenue) : "Restricted"} sub={financeVisible ? `${money(kpis.invoicedRevenue)} invoiced net` : "Finance-only field"} icon={<Lock size={18} />} />
       </div>
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
@@ -637,9 +732,9 @@ function CommandCentre({
             <button onClick={() => setActiveTab("schedule")} className="rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Open schedule</button>
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <CapacityBand label="Today" available="87%" committed="76%" tentative="9%" />
-            <CapacityBand label="Next 30 days" available="82%" committed={`${dashboard.utilisation}%`} tentative="14%" />
-            <CapacityBand label="Next 90 days" available="69%" committed="58%" tentative="21%" />
+            <CapacityBand label="Today" available={pct(dashboard.today.availabilityPct)} committed={pct(dashboard.today.utilisationPct)} tentative={pct(dashboard.today.tentativePct)} />
+            <CapacityBand label="Next 30 days" available={pct(kpis.availabilityPct)} committed={pct(kpis.utilisationPct)} tentative={pct(kpis.tentativePct)} />
+            <CapacityBand label="Next 90 days" available={pct(dashboard.next90.availabilityPct)} committed={pct(dashboard.next90.utilisationPct)} tentative={pct(dashboard.next90.tentativePct)} />
           </div>
           <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
             Weekly digest: resolve Charlie’s 140% clash, confirm Ben’s CBA/Powerlink alternative, and fill Cleanaway’s 60% Data Engineer demand before 18 Jul.
@@ -648,9 +743,9 @@ function CommandCentre({
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="text-lg font-bold text-slate-950">Action panels</h2>
           <div className="mt-4 space-y-3">
-            <ActionItem title="3 unfilled demand records" body="Drag qualified HubSpot demand onto matched people." tab="demand" setActiveTab={setActiveTab} />
+            <ActionItem title="3 unfilled demand records" body="Drag qualified canonical demand onto matched people." tab="demand" setActiveTab={setActiveTab} />
             <ActionItem title="2 approval exceptions" body="Over-allocation and waiting-list records need decision history." tab="approvals" setActiveTab={setActiveTab} />
-            <ActionItem title="5 migration issues" body="Workbook ambiguity, missing mappings and formula errors are tracked." tab="migration" setActiveTab={setActiveTab} />
+            <ActionItem title="MLVizz sync controls" body="Freshness, reconciliation and failed-record quarantine are tracked." tab="migration" setActiveTab={setActiveTab} />
           </div>
         </section>
       </div>
@@ -939,7 +1034,7 @@ function DemandPanel({
     <div className="grid grid-cols-1 gap-6 xl:grid-cols-[430px_1fr]">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-lg font-bold text-slate-950">Demand board</h2>
-        <p className="mt-1 text-sm text-slate-500">HubSpot stages create aggregate forecast, placeholder demand or committed assignments depending on configuration.</p>
+        <p className="mt-1 text-sm text-slate-500">Canonical opportunity stages create aggregate forecast, placeholder demand or committed assignments depending on configuration.</p>
         <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm"><b>{Math.round(demandLoad)}%</b> weighted allocation demand across qualified and proposed opportunities.</div>
         <div className="mt-4 space-y-3">
           {resourceDemands.map((demand) => (
@@ -1094,8 +1189,8 @@ function MigrationReview() {
     <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_360px]">
       <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 px-5 py-4">
-          <h2 className="flex items-center gap-2 text-lg font-bold text-slate-950"><FileSpreadsheet size={19} /> Workbook migration review</h2>
-          <p className="text-sm text-slate-500">The source workbook was not attached in this session, so this screen is seeded from the brief’s workbook findings and demo scenarios.</p>
+          <h2 className="flex items-center gap-2 text-lg font-bold text-slate-950"><FileSpreadsheet size={19} /> MLVizz synchronisation and reconciliation</h2>
+          <p className="text-sm text-slate-500">Canonical provider output, data-quality exceptions and open integration decisions are visible without coupling the UI to source-system payloads.</p>
         </div>
         <div className="overflow-auto">
           <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -1116,13 +1211,29 @@ function MigrationReview() {
         </div>
       </section>
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h3 className="font-bold text-slate-950">Import report summary</h3>
+        <h3 className="font-bold text-slate-950">Canonical data summary</h3>
         <div className="mt-4 space-y-3 text-sm text-slate-600">
-          <SummaryLine label="Named resources" value="212" />
-          <SummaryLine label="Active resources" value="207" />
-          <SummaryLine label="Populated allocation cells" value="2,300+" />
-          <SummaryLine label="Monthly cycles" value="15" />
-          <SummaryLine label="Stable IDs required" value="Yes" />
+          <SummaryLine label="Provider" value="MockMLVizzProvider" />
+          <SummaryLine label="People" value={String(mlvizzSnapshot.people.length)} />
+          <SummaryLine label="Identity mappings" value={String(identityMappings.length)} />
+          <SummaryLine label="Submitted actual entries" value={String(timesheetActuals.filter((item) => item.approvalStatus === "submitted").length)} />
+          <SummaryLine label="Approved actual entries" value={String(timesheetActuals.filter((item) => item.approvalStatus === "approved").length)} />
+          <SummaryLine label="Invoices" value={String(financialActuals.length)} />
+          <SummaryLine label="Paid invoices" value={String(financialActuals.filter((item) => item.status === "paid").length)} />
+          <SummaryLine label="Reconciliation variances" value={String(reconciliationSummaries.reduce((total, item) => total + item.varianceCount, 0))} />
+        </div>
+        <div className="mt-5 space-y-3">
+          <h4 className="flex items-center gap-2 text-sm font-bold text-slate-900"><ShieldCheck size={16} /> Refresh history</h4>
+          {mlvizzFreshness.map((item) => (
+            <div key={`${item.datasetName}-${item.sourceSystem}`} className="rounded-xl border border-slate-200 p-3 text-xs text-slate-600">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-bold text-slate-900">{item.datasetName} / {item.sourceSystem}</span>
+                <span className={item.status === "failed" ? "text-red-700" : item.status === "fresh" ? "text-emerald-700" : "text-amber-700"}>{item.status}</span>
+              </div>
+              <p className="mt-1">Accepted {item.recordsAccepted}; rejected {item.recordsRejected}; last success {formatTimestamp(item.lastSuccessfulRefreshAt)}.</p>
+              {item.failureSummary && <p className="mt-1 font-semibold text-amber-700">{item.failureSummary}</p>}
+            </div>
+          ))}
         </div>
       </section>
     </div>
