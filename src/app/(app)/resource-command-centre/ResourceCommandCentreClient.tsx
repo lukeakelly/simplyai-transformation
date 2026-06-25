@@ -1059,8 +1059,8 @@ function Schedule({
   createAssignmentFromDemand: (demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") => void;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[1fr_360px]">
-      <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <div className="grid min-w-0 grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1fr)_360px]">
+      <section className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4">
           <div className="min-w-0">
             <h2 className="text-lg font-bold text-slate-950">Daily schedule</h2>
@@ -1078,8 +1078,8 @@ function Schedule({
             </select>
           </div>
         </div>
-        <div className="max-h-[70vh] overflow-auto">
-          <div className="min-w-[1180px]">
+        <div className="max-h-[70vh] w-full max-w-full overflow-auto">
+          <div className="w-max min-w-[1180px]">
             <div className="sticky top-0 z-30 grid border-b border-slate-200 bg-slate-50 shadow-sm" style={{ gridTemplateColumns: `220px repeat(${days.length}, minmax(92px, 1fr))` }}>
               <div className="sticky left-0 top-0 z-40 border-r border-slate-200 bg-slate-50 p-3 text-xs font-bold uppercase tracking-wide text-slate-500">Person</div>
               {days.map((day) => (
