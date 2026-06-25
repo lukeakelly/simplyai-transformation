@@ -428,6 +428,7 @@ export function ResourceCommandCentreClient({
   }
 
   function openPersonDetail(personId: string) {
+    setSelectedEngagementId(null);
     setSelectedPersonId(personId);
   }
 
