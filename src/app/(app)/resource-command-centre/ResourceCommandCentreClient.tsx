@@ -1061,12 +1061,12 @@ function Schedule({
   return (
     <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[1fr_360px]">
       <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4 xl:flex-row xl:items-center xl:justify-between">
-          <div>
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4">
+          <div className="min-w-0">
             <h2 className="text-lg font-bold text-slate-950">Daily schedule</h2>
             <p className="text-sm text-slate-500">Drag assignment cards or demand items onto a person and date. Showing {days.length} business days from {formatDate(scheduleStartDate)} to {formatDate(scheduleEndDate)}.</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+          <div className="flex w-full flex-wrap items-center gap-2 text-xs text-slate-600">
             <button type="button" onClick={() => setScheduleStartDate(addDays(scheduleStartDate, -30))} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 font-semibold hover:bg-slate-50"><ChevronLeft size={14} /> 1 month</button>
             <button type="button" onClick={() => setScheduleStartDate(TODAY)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 font-semibold hover:bg-slate-50"><CalendarDays size={14} /> Today</button>
             <button type="button" onClick={() => setScheduleStartDate(addDays(scheduleStartDate, 30))} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 font-semibold hover:bg-slate-50">1 month <ChevronRight size={14} /></button>
