@@ -1078,7 +1078,7 @@ function Schedule({
             </select>
           </div>
         </div>
-        <div className="overflow-visible">
+        <div className="max-h-[70vh] overflow-auto">
           <div className="min-w-[1180px]">
             <div className="sticky top-0 z-30 grid border-b border-slate-200 bg-slate-50 shadow-sm" style={{ gridTemplateColumns: `220px repeat(${days.length}, minmax(92px, 1fr))` }}>
               <div className="sticky left-0 top-0 z-40 border-r border-slate-200 bg-slate-50 p-3 text-xs font-bold uppercase tracking-wide text-slate-500">Person</div>
