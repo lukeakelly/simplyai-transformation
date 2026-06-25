@@ -38,6 +38,8 @@ import {
   money,
   overlaps,
   resourceAllocationHistory,
+  resourceComments,
+  resourceRoleDefinitions,
   reconciliationSummaries,
   resourceAssignments,
   resourceDemands,
@@ -45,17 +47,20 @@ import {
   resourceProjects,
   timesheetActuals,
   type AssignmentStatus,
-  type AssignmentType,
   type AuditEntry,
   type ResourceAllocationHistoryEntry,
   type ResourceAssignment,
+  type ResourceComment,
+  type ResourceCommentTargetType,
   type ResourceDemand,
   type ResourcePerson,
+  type ResourceProject,
 } from "@/lib/resource-command-data";
 import { buildResourceDashboardKpis, formatFteDays, type ResourceDashboardKpis } from "@/lib/resource-command-kpis";
-import { saveResourcePlanningEvent } from "./actions";
+import { saveResourceComment, saveResourcePlanningEvent } from "./actions";
 
 type Tab = "centre" | "schedule" | "demand" | "people" | "bench" | "migration" | "approvals";
+type CurrentResourceUser = { id: string; name: string; role: string; permission: "editor" | "viewer"; canEdit: boolean; isAdmin: boolean };
 type DragPayload = { kind: "assignment"; id: string } | { kind: "demand"; id: string };
 type ConflictDraft = {
   demand: ResourceDemand;
@@ -111,17 +116,6 @@ const tabs: { id: Tab; label: string }[] = [
   { id: "migration", label: "MLVizz Sync" },
   { id: "approvals", label: "Approvals & Audit" },
 ];
-
-const typeClasses: Record<AssignmentType, string> = {
-  Billable: "bg-blue-900 text-white border-blue-950",
-  "Managed Service": "bg-teal-700 text-white border-teal-800",
-  Presales: "bg-purple-700 text-white border-purple-800",
-  "Business Development": "bg-violet-700 text-white border-violet-800",
-  Internal: "bg-cyan-600 text-white border-cyan-700",
-  Training: "bg-sky-200 text-sky-950 border-sky-300",
-  Leave: "bg-slate-300 text-slate-800 border-slate-400",
-  Bench: "bg-amber-100 text-amber-900 border-amber-300",
-};
 
 const statusClasses: Record<AssignmentStatus, string> = {
   Confirmed: "border-solid",
@@ -227,6 +221,48 @@ function getAssignmentMargin(assignment: ResourceAssignment, people: ResourcePer
   return days * (person.billRate - person.costRate) * (assignment.allocationPct / 100);
 }
 
+function assignmentRag(assignment: ResourceAssignment, assignments: ResourceAssignment[]) {
+  const project = assignmentProject(assignment);
+  if (assignment.status === "At Risk" || assignment.status === "Waiting List" || project.health === "Red") return "Red";
+  if (!assignment.personId || assignment.type === "Leave" || assignment.type === "Bench") return "Amber";
+  const longestTerm = assignmentDurationDays(assignment) >= 30;
+  const fullyAllocated = assignment.allocationPct >= 100;
+  const dayLoad = getBookedPct(assignments, assignment.personId, assignment.start, false);
+  if (dayLoad > 100) return "Red";
+  if (assignment.status === "Confirmed" && fullyAllocated && longestTerm && project.health === "Green") return "Green";
+  return "Amber";
+}
+
+function assignmentRagClasses(rag: "Green" | "Amber" | "Red") {
+  if (rag === "Green") return "border-emerald-600 bg-emerald-600 text-white";
+  if (rag === "Red") return "border-red-600 bg-red-600 text-white ring-2 ring-red-200";
+  return "border-amber-500 bg-amber-100 text-amber-950";
+}
+
+function attentionForAssignment(assignment: ResourceAssignment, assignments: ResourceAssignment[]) {
+  const rag = assignmentRag(assignment, assignments);
+  if (rag === "Green") return null;
+  if (rag === "Red") return "Needs attention: unstable, over-allocated, waiting-listed or red-health engagement.";
+  return "Watch: not yet fully allocated, long-term, confirmed and stable.";
+}
+
+function deliveryAssignmentsForPerson(assignments: ResourceAssignment[], personId: string) {
+  return assignments
+    .filter((assignment) => assignment.personId === personId && (assignment.type === "Billable" || assignment.type === "Managed Service") && assignment.status === "Confirmed")
+    .sort((a, b) => a.start.localeCompare(b.start));
+}
+
+function benchDuration(person: ResourcePerson, assignments: ResourceAssignment[]) {
+  const activeDelivery = deliveryAssignmentsForPerson(assignments, person.id).find((assignment) => overlaps(TODAY, assignment));
+  if (activeDelivery) return { days: 0, since: activeDelivery.start, label: "Currently assigned to delivery" };
+  const lastDelivery = deliveryAssignmentsForPerson(assignments, person.id)
+    .filter((assignment) => assignment.end < TODAY)
+    .sort((a, b) => b.end.localeCompare(a.end))[0];
+  const since = lastDelivery ? addDays(lastDelivery.end, 1) : TODAY;
+  const days = Math.max(0, Math.floor((Date.parse(`${TODAY}T00:00:00.000Z`) - Date.parse(`${since}T00:00:00.000Z`)) / 86400000));
+  return { days, since, label: lastDelivery ? `Bench since ${formatDate(since)}` : "No official delivery assignment found" };
+}
+
 function matchCandidates(demand: ResourceDemand, assignments: ResourceAssignment[], people: ResourcePerson[]): MatchResult[] {
   return people
     .filter((person) => person.employmentType !== "Corporate")
@@ -294,9 +330,13 @@ function buildExport(assignments: ResourceAssignment[], people: ResourcePerson[]
 export function ResourceCommandCentreClient({
   initialAssignments,
   initialAllocationHistory = [],
+  initialComments = [],
+  currentUser,
 }: {
   initialAssignments?: ResourceAssignment[];
   initialAllocationHistory?: ResourceAllocationHistoryEntry[];
+  initialComments?: ResourceComment[];
+  currentUser: CurrentResourceUser | null;
 }) {
   const [activeTab, setActiveTab] = useState<Tab>("centre");
   const [people, setPeople] = useState<ResourcePerson[]>(resourcePeople);
@@ -308,8 +348,16 @@ export function ResourceCommandCentreClient({
       ...resourceAllocationHistory.filter((entry) => !persistedHistoryIds.has(entry.id)),
     ];
   });
+  const [comments, setComments] = useState<ResourceComment[]>(() => {
+    const persistedCommentIds = new Set(initialComments.map((entry) => entry.id));
+    return [
+      ...initialComments,
+      ...resourceComments.filter((entry) => !persistedCommentIds.has(entry.id)),
+    ];
+  });
   const [audit, setAudit] = useState<AuditEntry[]>(auditEntries);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>(resourceAssignments[0]?.id ?? "");
+  const [selectedEngagementId, setSelectedEngagementId] = useState<string | null>(null);
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [selectedDemandId, setSelectedDemandId] = useState(resourceDemands[0]?.id ?? "");
   const [conflict, setConflict] = useState<ConflictDraft | null>(null);
@@ -323,10 +371,12 @@ export function ResourceCommandCentreClient({
   const [newMemberDraft, setNewMemberDraft] = useState<NewMemberDraft>(defaultNewMemberDraft);
   const [scheduleStartDate, setScheduleStartDate] = useState(TODAY);
   const [scheduleWindowDays, setScheduleWindowDays] = useState(130);
+  const [scheduleColumnWidth, setScheduleColumnWidth] = useState(72);
 
   const scheduleDays = useMemo(() => businessDays(scheduleStartDate, scheduleWindowDays), [scheduleStartDate, scheduleWindowDays]);
   const scheduleEndDate = scheduleDays[scheduleDays.length - 1] ?? scheduleStartDate;
   const selectedAssignment = assignments.find((assignment) => assignment.id === selectedAssignmentId) ?? assignments[0];
+  const selectedEngagement = selectedEngagementId ? resourceProjects.find((project) => project.id === selectedEngagementId) ?? null : null;
   const selectedPerson = selectedPersonId ? people.find((person) => person.id === selectedPersonId) ?? null : null;
   const selectedDemand = resourceDemands.find((demand) => demand.id === selectedDemandId) ?? resourceDemands[0];
   const selectedMatches = useMemo(() => matchCandidates(selectedDemand, assignments, people), [assignments, people, selectedDemand]);
@@ -378,7 +428,29 @@ export function ResourceCommandCentreClient({
   }
 
   function openPersonDetail(personId: string) {
+    setSelectedEngagementId(null);
     setSelectedPersonId(personId);
+  }
+
+  async function addResourceComment(targetType: ResourceCommentTargetType, targetId: string, body: string) {
+    const trimmed = body.trim();
+    if (!trimmed || !currentUser?.canEdit) return;
+    const optimisticComment: ResourceComment = {
+      id: `comment-${Date.now()}`,
+      targetType,
+      targetId,
+      body: trimmed,
+      authorId: currentUser.id,
+      authorName: currentUser.name,
+      authorRole: currentUser.role,
+      at: new Date().toISOString(),
+    };
+    setComments((items) => [optimisticComment, ...items]);
+    appendAudit("Added commentary", `${targetType}:${targetId}`, trimmed);
+    const result = await saveResourceComment({ targetType, targetId, body: trimmed });
+    if (result.ok && result.comment) {
+      setComments((items) => [result.comment, ...items.filter((item) => item.id !== optimisticComment.id)]);
+    }
   }
 
   function persistAssignment(assignment: ResourceAssignment, eventLabel: string, previous: ResourceAssignment | null = null) {
@@ -654,17 +726,20 @@ export function ResourceCommandCentreClient({
       <main className="space-y-6 p-6">
         <FreshnessBanner />
         <FilterBar search={search} setSearch={setSearch} pillar={pillar} setPillar={setPillar} skill={skill} setSkill={setSkill} status={status} setStatus={setStatus} pillars={pillars} skills={skills} />
-        {activeTab === "centre" && <CommandCentre dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} />}
+        {activeTab === "centre" && <CommandCentre dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} currentUser={currentUser} />}
         {activeTab === "schedule" && (
           <Schedule
             assignments={assignments}
             people={filteredPeople}
+            comments={comments}
             days={scheduleDays}
             scheduleStartDate={scheduleStartDate}
             scheduleEndDate={scheduleEndDate}
             scheduleWindowDays={scheduleWindowDays}
             setScheduleWindowDays={setScheduleWindowDays}
             setScheduleStartDate={setScheduleStartDate}
+            scheduleColumnWidth={scheduleColumnWidth}
+            setScheduleColumnWidth={setScheduleColumnWidth}
             selectedAssignment={selectedAssignment}
             selectedDemand={selectedDemand}
             selectedMatches={selectedMatches}
@@ -673,6 +748,7 @@ export function ResourceCommandCentreClient({
             setOverrideReason={setOverrideReason}
             setSelectedAssignmentId={setSelectedAssignmentId}
             onOpenPerson={openPersonDetail}
+            onOpenEngagement={setSelectedEngagementId}
             onDropCell={onDropCell}
             resizeAssignment={resizeAssignment}
             splitAssignment={splitAssignment}
@@ -681,20 +757,34 @@ export function ResourceCommandCentreClient({
           />
         )}
         {activeTab === "demand" && (
-          <DemandPanel assignments={assignments} selectedDemandId={selectedDemandId} setSelectedDemandId={setSelectedDemandId} selectedMatches={selectedMatches} createAssignmentFromDemand={createAssignmentFromDemand} onOpenPerson={openPersonDetail} />
+          <DemandPanel assignments={assignments} selectedDemandId={selectedDemandId} setSelectedDemandId={setSelectedDemandId} selectedMatches={selectedMatches} createAssignmentFromDemand={createAssignmentFromDemand} onOpenPerson={openPersonDetail} onOpenEngagement={setSelectedEngagementId} />
         )}
-        {activeTab === "people" && <PeopleDirectory people={filteredPeople} assignments={assignments} financeVisible={financeVisible} draft={newMemberDraft} setDraft={setNewMemberDraft} addTeamMember={addTeamMember} onOpenPerson={openPersonDetail} />}
+        {activeTab === "people" && <PeopleDirectory people={filteredPeople} assignments={assignments} financeVisible={financeVisible} draft={newMemberDraft} setDraft={setNewMemberDraft} addTeamMember={addTeamMember} onOpenPerson={openPersonDetail} currentUser={currentUser} />}
         {activeTab === "bench" && <BenchView people={filteredPeople} assignments={assignments} onOpenPerson={openPersonDetail} />}
         {activeTab === "migration" && <MigrationReview />}
-        {activeTab === "approvals" && <ApprovalsAudit assignments={assignments} people={people} audit={audit} selectedAssignment={selectedAssignment} comment={comment} setComment={setComment} addComment={addComment} approveSelectedOverride={approveSelectedOverride} onOpenPerson={openPersonDetail} />}
+        {activeTab === "approvals" && <ApprovalsAudit assignments={assignments} people={people} audit={audit} selectedAssignment={selectedAssignment} comment={comment} setComment={setComment} addComment={addComment} approveSelectedOverride={approveSelectedOverride} onOpenPerson={openPersonDetail} comments={comments} addResourceComment={addResourceComment} currentUser={currentUser} />}
       </main>
       {selectedPerson && (
         <PersonDetailModal
           person={selectedPerson}
           assignments={assignments}
           allocationHistory={allocationHistory}
+          comments={comments}
+          addResourceComment={addResourceComment}
+          currentUser={currentUser}
           financeVisible={financeVisible}
           onClose={() => setSelectedPersonId(null)}
+        />
+      )}
+      {selectedEngagement && (
+        <EngagementDetailModal
+          project={selectedEngagement}
+          assignments={assignments}
+          comments={comments}
+          addResourceComment={addResourceComment}
+          currentUser={currentUser}
+          onOpenPerson={openPersonDetail}
+          onClose={() => setSelectedEngagementId(null)}
         />
       )}
     </div>
@@ -728,16 +818,154 @@ function PersonNameLink({ person, onOpenPerson, className = "" }: { person: Reso
   );
 }
 
+function CommentaryPanel({
+  title,
+  targetType,
+  targetId,
+  comments,
+  currentUser,
+  addResourceComment,
+}: {
+  title: string;
+  targetType: ResourceCommentTargetType;
+  targetId: string;
+  comments: ResourceComment[];
+  currentUser: CurrentResourceUser | null;
+  addResourceComment: (targetType: ResourceCommentTargetType, targetId: string, body: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const canComment = currentUser?.canEdit ?? false;
+  return (
+    <section className="rounded-2xl border border-slate-200 p-4">
+      <h3 className="flex items-center gap-2 font-bold text-slate-950"><MessageSquare size={16} /> {title}</h3>
+      <div className="mt-3 space-y-3">
+        {comments.map((item) => (
+          <div key={item.id} className="rounded-xl bg-slate-50 p-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-bold text-slate-900">{item.authorName} · {item.authorRole}</span>
+              <span className="text-xs text-slate-500">{formatHistoryDate(item.at)}</span>
+            </div>
+            <p className="mt-1 text-slate-600">{item.body}</p>
+          </div>
+        ))}
+        {comments.length === 0 && <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No comments yet.</p>}
+      </div>
+      <div className="mt-4 space-y-2">
+        <textarea
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          disabled={!canComment}
+          placeholder={canComment ? "Add commentary; author and role are tracked automatically." : "Read-only role cannot add commentary."}
+          className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 disabled:bg-slate-50 disabled:text-slate-400"
+        />
+        <button
+          type="button"
+          disabled={!canComment || !draft.trim()}
+          onClick={() => {
+            addResourceComment(targetType, targetId, draft);
+            setDraft("");
+          }}
+          className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Add comment
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function EngagementDetailModal({
+  project,
+  assignments,
+  comments,
+  currentUser,
+  addResourceComment,
+  onOpenPerson,
+  onClose,
+}: {
+  project: ResourceProject;
+  assignments: ResourceAssignment[];
+  comments: ResourceComment[];
+  currentUser: CurrentResourceUser | null;
+  addResourceComment: (targetType: ResourceCommentTargetType, targetId: string, body: string) => void;
+  onOpenPerson: (personId: string) => void;
+  onClose: () => void;
+}) {
+  const projectAssignments = assignments.filter((assignment) => assignment.projectId === project.id);
+  const projectComments = comments.filter((item) => item.targetType === "project" && item.targetId === project.id);
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/50 p-4 backdrop-blur-sm">
+      <div className="mx-auto flex max-h-[92vh] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{project.client} · {project.code}</div>
+            <h2 className="mt-1 text-2xl font-bold text-slate-950">{project.name}</h2>
+            <p className="text-sm text-slate-500">HubSpot deal {project.hubspotDealId ?? "not mapped"} · Sales: {project.salesOwner} · Delivery: {project.deliveryLead}</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-full border border-slate-200 p-2 text-slate-500 hover:bg-slate-50" aria-label="Close engagement detail"><X size={18} /></button>
+        </div>
+        <div className="overflow-auto p-5">
+          <div className="grid gap-4 md:grid-cols-4">
+            <DrawerField label="HubSpot stage" value={project.dealStage} />
+            <DrawerField label="Deal value" value={money(project.dealValue)} />
+            <DrawerField label="Probability" value={pct(project.dealProbability)} />
+            <DrawerField label="Project health" value={project.health} />
+            <DrawerField label="Engagement status" value={project.engagementStatus} />
+            <DrawerField label="Expected close" value={project.expectedCloseDate ?? "Not supplied"} />
+          </div>
+          {project.hubspotDealUrl && (
+            <a href={project.hubspotDealUrl} target="_blank" rel="noreferrer" className="mt-4 inline-flex rounded-lg border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-50">
+              Open HubSpot deal
+            </a>
+          )}
+          <div className="mt-5 grid gap-5 xl:grid-cols-2">
+            <section className="rounded-2xl border border-slate-200 p-4">
+              <h3 className="font-bold text-slate-950">Engagement allocations</h3>
+              <div className="mt-3 space-y-3">
+                {projectAssignments.map((assignment) => {
+                  const person = resourcePeople.find((item) => item.id === assignment.personId);
+                  const rag = assignmentRag(assignment, assignments);
+                  return (
+                    <div key={assignment.id} className="rounded-xl border border-slate-200 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-bold text-slate-950">{assignment.role}</div>
+                          <div className="text-xs text-slate-500">{assignment.start} to {assignment.end} · {assignment.status}</div>
+                        </div>
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${assignmentRagClasses(rag)}`}>{rag}</span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-600">
+                        {person ? <PersonNameLink person={person} onOpenPerson={onOpenPerson} className="text-sm" /> : "Unfilled"} · {pct(assignment.allocationPct)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+            <CommentaryPanel title="Engagement commentary" targetType="project" targetId={project.id} comments={projectComments} currentUser={currentUser} addResourceComment={addResourceComment} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PersonDetailModal({
   person,
   assignments,
   allocationHistory,
+  comments,
+  addResourceComment,
+  currentUser,
   financeVisible,
   onClose,
 }: {
   person: ResourcePerson;
   assignments: ResourceAssignment[];
   allocationHistory: ResourceAllocationHistoryEntry[];
+  comments: ResourceComment[];
+  addResourceComment: (targetType: ResourceCommentTargetType, targetId: string, body: string) => void;
+  currentUser: CurrentResourceUser | null;
   financeVisible: boolean;
   onClose: () => void;
 }) {
@@ -747,6 +975,8 @@ function PersonDetailModal({
   const history = allocationHistory.filter((entry) => entry.personId === person.id || entry.before?.personId === person.id || entry.after?.personId === person.id);
   const currentLoad = getBookedPct(assignments, person.id, TODAY, false);
   const availableToday = getAvailablePct(assignments, person.id, TODAY);
+  const bench = benchDuration(person, assignments);
+  const personComments = comments.filter((item) => item.targetType === "person" && item.targetId === person.id);
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="mx-auto flex max-h-[92vh] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
@@ -763,6 +993,7 @@ function PersonDetailModal({
             <DrawerField label="Current load" value={`${pct(currentLoad)} / ${pct(availableToday)}`} />
             <DrawerField label="Capacity" value={`${person.dailyCapacityHours}h/day`} />
             <DrawerField label="Employment" value={person.employmentType} />
+            <DrawerField label="Bench duration" value={bench.days === 0 ? bench.label : `${bench.days} days`} />
             <DrawerField label="Rates" value={financeVisible ? `${money(person.billRate)} / ${money(person.costRate)}` : "Restricted"} />
           </div>
           <div className="mt-5 rounded-2xl border border-slate-200 p-4">
@@ -810,6 +1041,16 @@ function PersonDetailModal({
                 {history.length === 0 && <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No allocation history recorded for this person yet.</p>}
               </div>
             </section>
+          </div>
+          <div className="mt-5">
+            <CommentaryPanel
+              title="Person commentary"
+              targetType="person"
+              targetId={person.id}
+              comments={personComments}
+              currentUser={currentUser}
+              addResourceComment={addResourceComment}
+            />
           </div>
         </div>
       </div>
@@ -921,21 +1162,24 @@ function CommandCentre({
   dashboard,
   financeVisible,
   setActiveTab,
+  currentUser,
 }: {
   dashboard: { today: ResourceDashboardKpis; next30: ResourceDashboardKpis; next90: ResourceDashboardKpis };
   financeVisible: boolean;
   setActiveTab: (tab: Tab) => void;
+  currentUser: CurrentResourceUser | null;
 }) {
   const kpis = dashboard.next30;
+  const currentRole = currentUser?.permission === "viewer" ? "Read Only" : currentUser?.isAdmin ? "Super Admin" : "Resource Admin";
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label="30-day billable util." value={pct(kpis.utilisationPct)} sub={`${formatFteDays(kpis.committedDeliveryHours)} committed of ${formatFteDays(kpis.availableHours)} available`} icon={<UserCheck size={18} />} />
-        <MetricCard label="Pipeline demand" value={formatFteDays(kpis.pipelineWeightedHours)} sub={`${pct(kpis.pipelineCapacityPct)} of 30-day capacity after confidence weighting`} icon={<Sparkles size={18} />} />
-        <MetricCard label="Over-allocation" value={formatFteDays(kpis.overAllocatedHours)} sub={`${kpis.overAllocatedPersonDays} person-days above available capacity`} tone="danger" icon={<AlertTriangle size={18} />} />
-        <MetricCard label="Bench capacity" value={formatFteDays(kpis.benchHours)} sub="Available person-days after scheduled work and leave" tone="amber" icon={<Clock3 size={18} />} />
-        <MetricCard label="Ending soon" value={kpis.endingSoon} sub="Confirmed/tentative assignments ending within 21 days" icon={<ArrowRightLeft size={18} />} />
-        <MetricCard label="Paid actuals" value={financeVisible ? money(kpis.paidRevenue) : "Restricted"} sub={financeVisible ? `${money(kpis.invoicedRevenue)} invoiced net` : "Finance-only field"} icon={<Lock size={18} />} />
+        <MetricCard label="30-day billable util." value={pct(kpis.utilisationPct)} sub={`${formatFteDays(kpis.committedDeliveryHours)} committed of ${formatFteDays(kpis.availableHours)} available`} icon={<UserCheck size={18} />} onClick={() => setActiveTab("schedule")} attention={kpis.utilisationPct < 60 ? "Under-utilisation needs review" : undefined} />
+        <MetricCard label="Pipeline demand" value={formatFteDays(kpis.pipelineWeightedHours)} sub={`${pct(kpis.pipelineCapacityPct)} of 30-day capacity after confidence weighting`} icon={<Sparkles size={18} />} onClick={() => setActiveTab("demand")} attention={kpis.pipelineCapacityPct > 20 ? "Pipeline demand may exceed bench" : undefined} />
+        <MetricCard label="Over-allocation" value={formatFteDays(kpis.overAllocatedHours)} sub={`${kpis.overAllocatedPersonDays} person-days above available capacity`} tone="danger" icon={<AlertTriangle size={18} />} onClick={() => setActiveTab("approvals")} attention={kpis.overAllocatedHours > 0 ? "Immediate approval action required" : undefined} />
+        <MetricCard label="Bench capacity" value={formatFteDays(kpis.benchHours)} sub="Available person-days after scheduled work and leave" tone="amber" icon={<Clock3 size={18} />} onClick={() => setActiveTab("bench")} attention={kpis.benchPersonDays > 100 ? "Bench duration should be triaged" : undefined} />
+        <MetricCard label="Ending soon" value={kpis.endingSoon} sub="Confirmed/tentative assignments ending within 21 days" icon={<ArrowRightLeft size={18} />} onClick={() => setActiveTab("schedule")} attention={kpis.endingSoon > 0 ? "Upcoming roll-offs need redeployment" : undefined} />
+        <MetricCard label="Paid actuals" value={financeVisible ? money(kpis.paidRevenue) : "Restricted"} sub={financeVisible ? `${money(kpis.invoicedRevenue)} invoiced net` : "Finance-only field"} icon={<Lock size={18} />} onClick={() => setActiveTab("approvals")} />
       </div>
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm xl:col-span-2">
@@ -952,7 +1196,7 @@ function CommandCentre({
             <CapacityBand label="Next 90 days" available={pct(dashboard.next90.availabilityPct)} committed={pct(dashboard.next90.utilisationPct)} tentative={pct(dashboard.next90.tentativePct)} />
           </div>
           <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
-            Weekly digest: resolve Charlie’s 140% clash, confirm Ben’s CBA/Powerlink alternative, and fill Cleanaway’s 60% Data Engineer demand before 18 Jul.
+            Weekly digest: resolve red RAG allocations first, confirm short-term amber work, and fill Cleanaway’s 60% Data Engineer demand before 18 Jul.
           </div>
         </section>
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -962,23 +1206,39 @@ function CommandCentre({
             <ActionItem title="2 approval exceptions" body="Over-allocation and waiting-list records need decision history." tab="approvals" setActiveTab={setActiveTab} />
             <ActionItem title="MLVizz sync controls" body="Freshness, reconciliation and failed-record quarantine are tracked." tab="migration" setActiveTab={setActiveTab} />
           </div>
+          <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex items-center gap-2 text-sm font-bold text-slate-950"><ShieldCheck size={16} /> SSO/RBAC readiness</div>
+            <p className="mt-2 text-xs text-slate-600">Current access: {currentRole}. Login is still local-dev credentials until SSO environment variables are configured.</p>
+            <div className="mt-3 space-y-2">
+              {resourceRoleDefinitions.map((item) => (
+                <div key={item.role} className="rounded-lg bg-white p-2 text-xs text-slate-600">
+                  <span className="font-bold text-slate-900">{item.role}</span>: {item.description}
+                </div>
+              ))}
+            </div>
+          </div>
         </section>
       </div>
     </div>
   );
 }
 
-function MetricCard({ label, value, sub, icon, tone = "blue" }: { label: string; value: string | number; sub: string; icon: React.ReactNode; tone?: "blue" | "danger" | "amber" }) {
+function MetricCard({ label, value, sub, icon, tone = "blue", onClick, attention }: { label: string; value: string | number; sub: string; icon: React.ReactNode; tone?: "blue" | "danger" | "amber"; onClick: () => void; attention?: string }) {
   const toneClass = tone === "danger" ? "text-red-600 bg-red-50" : tone === "amber" ? "text-amber-700 bg-amber-50" : "text-blue-700 bg-blue-50";
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <button type="button" onClick={onClick} className="rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-blue-300 hover:bg-blue-50">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-slate-500">{label}</span>
         <span className={`rounded-lg p-2 ${toneClass}`}>{icon}</span>
       </div>
       <div className="mt-3 text-2xl font-bold text-slate-950">{value}</div>
       <div className="mt-1 text-xs text-slate-500">{sub}</div>
-    </div>
+      {attention && (
+        <div className="mt-3 inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-1 text-[11px] font-bold text-red-700">
+          <AlertTriangle size={12} /> {attention}
+        </div>
+      )}
+    </button>
   );
 }
 
@@ -1016,12 +1276,15 @@ function ActionItem({ title, body, tab, setActiveTab }: { title: string; body: s
 function Schedule({
   assignments,
   people,
+  comments,
   days,
   scheduleStartDate,
   scheduleEndDate,
   scheduleWindowDays,
   setScheduleWindowDays,
   setScheduleStartDate,
+  scheduleColumnWidth,
+  setScheduleColumnWidth,
   selectedAssignment,
   selectedDemand,
   selectedMatches,
@@ -1030,6 +1293,7 @@ function Schedule({
   setOverrideReason,
   setSelectedAssignmentId,
   onOpenPerson,
+  onOpenEngagement,
   onDropCell,
   resizeAssignment,
   splitAssignment,
@@ -1038,12 +1302,15 @@ function Schedule({
 }: {
   assignments: ResourceAssignment[];
   people: ResourcePerson[];
+  comments: ResourceComment[];
   days: string[];
   scheduleStartDate: string;
   scheduleEndDate: string;
   scheduleWindowDays: number;
   setScheduleWindowDays: (days: number) => void;
   setScheduleStartDate: (date: string) => void;
+  scheduleColumnWidth: number;
+  setScheduleColumnWidth: (width: number) => void;
   selectedAssignment?: ResourceAssignment;
   selectedDemand: ResourceDemand;
   selectedMatches: MatchResult[];
@@ -1052,12 +1319,14 @@ function Schedule({
   setOverrideReason: (value: string) => void;
   setSelectedAssignmentId: (id: string) => void;
   onOpenPerson: (personId: string) => void;
+  onOpenEngagement: (projectId: string) => void;
   onDropCell: (event: DragEvent<HTMLDivElement>, person: ResourcePerson, date: string) => void;
   resizeAssignment: (days: number) => void;
   splitAssignment: () => void;
   approveSelectedOverride: () => void;
   createAssignmentFromDemand: (demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") => void;
 }) {
+  const scheduleColumns = `220px repeat(${days.length}, minmax(${scheduleColumnWidth}px, ${scheduleColumnWidth}px))`;
   return (
     <div className="grid min-w-0 grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1fr)_360px]">
       <section className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -1076,18 +1345,31 @@ function Schedule({
               <option value={65}>65 business days</option>
               <option value={130}>130 business days</option>
             </select>
+            <label className="inline-flex items-center gap-2 rounded-lg border border-slate-300 px-3 py-2 font-semibold">
+              Column width
+              <input
+                type="range"
+                min={56}
+                max={120}
+                step={4}
+                value={scheduleColumnWidth}
+                onChange={(event) => setScheduleColumnWidth(Number(event.target.value))}
+                className="w-28"
+              />
+              <span className="tabular-nums">{scheduleColumnWidth}px</span>
+            </label>
           </div>
         </div>
         <div className="max-h-[70vh] w-full max-w-full overflow-auto">
           <div className="w-max min-w-[1180px]">
-            <div className="sticky top-0 z-30 grid border-b border-slate-200 bg-slate-50 shadow-sm" style={{ gridTemplateColumns: `220px repeat(${days.length}, minmax(92px, 1fr))` }}>
+            <div className="sticky top-0 z-30 grid border-b border-slate-200 bg-slate-50 shadow-sm" style={{ gridTemplateColumns: scheduleColumns }}>
               <div className="sticky left-0 top-0 z-40 border-r border-slate-200 bg-slate-50 p-3 text-xs font-bold uppercase tracking-wide text-slate-500">Person</div>
               {days.map((day) => (
-                <div key={day} className="sticky top-0 z-30 border-r border-slate-200 bg-slate-50 p-3 text-center text-xs font-bold text-slate-600">{formatDate(day)}</div>
+                <div key={day} className="sticky top-0 z-30 border-r border-slate-200 bg-slate-50 px-2 py-3 text-center text-xs font-bold text-slate-600">{formatDate(day)}</div>
               ))}
             </div>
             {people.map((person) => (
-              <div key={person.id} className="grid border-b border-slate-100" style={{ gridTemplateColumns: `220px repeat(${days.length}, minmax(92px, 1fr))` }}>
+              <div key={person.id} className="grid border-b border-slate-100" style={{ gridTemplateColumns: scheduleColumns }}>
                 <div className="sticky left-0 z-10 border-r border-slate-200 bg-white p-3">
                   <div className="flex items-center gap-3">
                     <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">{compactName(person.name)}</div>
@@ -1115,16 +1397,24 @@ function Schedule({
                       <div className="space-y-1">
                         {dailyAssignments.slice(0, 3).map((assignment) => {
                           const project = assignmentProject(assignment);
+                          const rag = assignmentRag(assignment, assignments);
+                          const attention = attentionForAssignment(assignment, assignments);
                           return (
                             <button
                               key={assignment.id}
                               draggable
                               onDragStart={(event) => event.dataTransfer.setData("application/json", encodeDrag({ kind: "assignment", id: assignment.id }))}
                               onClick={() => setSelectedAssignmentId(assignment.id)}
-                              className={`w-full rounded-md border px-2 py-1 text-left text-[11px] shadow-sm ${typeClasses[assignment.type]} ${statusClasses[assignment.status]} ${selectedAssignment?.id === assignment.id ? "ring-2 ring-offset-1 ring-blue-400" : ""}`}
+                              onDoubleClick={() => onOpenEngagement(assignment.projectId)}
+                              title={attention ?? `RAG ${rag}: stable allocation`}
+                              className={`w-full rounded-md border px-2 py-1 text-left text-[11px] shadow-sm ${assignmentRagClasses(rag)} ${statusClasses[assignment.status]} ${selectedAssignment?.id === assignment.id ? "ring-2 ring-offset-1 ring-blue-400" : ""}`}
                             >
-                              <div className="truncate font-bold">{project.client} · {assignment.allocationPct}%</div>
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="truncate font-bold">{project.client} · {assignment.allocationPct}%</span>
+                                {attention && <AlertTriangle size={11} className="shrink-0" />}
+                              </div>
                               <div className="truncate opacity-90">{assignment.role}</div>
+                              <div className="truncate text-[10px] opacity-80">{rag}</div>
                             </button>
                           );
                         })}
@@ -1142,7 +1432,7 @@ function Schedule({
       <aside className="space-y-4">
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="flex items-center gap-2 text-base font-bold text-slate-950"><PanelRightOpen size={18} /> Assignment drawer</h3>
-          {selectedAssignment ? <AssignmentDrawer assignment={selectedAssignment} people={people} resizeAssignment={resizeAssignment} splitAssignment={splitAssignment} approveSelectedOverride={approveSelectedOverride} overrideReason={overrideReason} setOverrideReason={setOverrideReason} onOpenPerson={onOpenPerson} /> : <p className="mt-3 text-sm text-slate-500">Select an assignment to inspect details.</p>}
+          {selectedAssignment ? <AssignmentDrawer assignment={selectedAssignment} people={people} comments={comments.filter((item) => item.targetId === selectedAssignment.id || item.targetId === selectedAssignment.projectId)} resizeAssignment={resizeAssignment} splitAssignment={splitAssignment} approveSelectedOverride={approveSelectedOverride} overrideReason={overrideReason} setOverrideReason={setOverrideReason} onOpenPerson={onOpenPerson} onOpenEngagement={onOpenEngagement} /> : <p className="mt-3 text-sm text-slate-500">Select an assignment to inspect details.</p>}
         </section>
         {conflict && (
           <section className="rounded-2xl border-2 border-red-300 bg-red-50 p-5 shadow-sm">
@@ -1193,21 +1483,25 @@ function Schedule({
 function AssignmentDrawer({
   assignment,
   people,
+  comments,
   resizeAssignment,
   splitAssignment,
   approveSelectedOverride,
   overrideReason,
   setOverrideReason,
   onOpenPerson,
+  onOpenEngagement,
 }: {
   assignment: ResourceAssignment;
   people: ResourcePerson[];
+  comments: ResourceComment[];
   resizeAssignment: (days: number) => void;
   splitAssignment: () => void;
   approveSelectedOverride: () => void;
   overrideReason: string;
   setOverrideReason: (value: string) => void;
   onOpenPerson: (personId: string) => void;
+  onOpenEngagement: (projectId: string) => void;
 }) {
   const person = people.find((item) => item.id === assignment.personId);
   const project = assignmentProject(assignment);
@@ -1227,6 +1521,11 @@ function AssignmentDrawer({
         <DrawerField label="Margin" value={money(getAssignmentMargin(assignment, people))} />
       </div>
       <div className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{assignment.notes}</div>
+      <button type="button" onClick={() => onOpenEngagement(project.id)} className="w-full rounded-xl border border-blue-200 bg-blue-50 p-3 text-left text-sm text-blue-950 hover:border-blue-400">
+        <div className="font-bold">Open engagement / HubSpot deal</div>
+        <div className="mt-1 text-xs">{project.hubspotDealId ?? "No HubSpot deal"} · Sales: {project.salesOwner} · Delivery: {project.deliveryLead}</div>
+      </button>
+      {comments.length > 0 && <div className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">{comments.length} comment records linked to this assignment.</div>}
       {assignment.override && (
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
           Approved by {assignment.override.approver}; expires {formatDate(assignment.override.expiryDate)}. Reason: {assignment.override.reason}
@@ -1261,6 +1560,7 @@ function DemandPanel({
   selectedMatches,
   createAssignmentFromDemand,
   onOpenPerson,
+  onOpenEngagement,
 }: {
   assignments: ResourceAssignment[];
   selectedDemandId: string;
@@ -1268,15 +1568,26 @@ function DemandPanel({
   selectedMatches: MatchResult[];
   createAssignmentFromDemand: (demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") => void;
   onOpenPerson: (personId: string) => void;
+  onOpenEngagement: (projectId: string) => void;
 }) {
   const selectedDemand = resourceDemands.find((item) => item.id === selectedDemandId) ?? resourceDemands[0];
   const demandLoad = resourceDemands.reduce((total, demand) => total + demand.allocationPct * demand.confidence / 100, 0);
+  const selectedEngagement = resourceProjects.find((project) => project.hubspotDealId === selectedDemand.sourceOpportunityId) ?? null;
   return (
     <div className="grid grid-cols-1 gap-6 xl:grid-cols-[430px_1fr]">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-lg font-bold text-slate-950">Demand board</h2>
         <p className="mt-1 text-sm text-slate-500">Canonical opportunity stages create aggregate forecast, placeholder demand or committed assignments depending on configuration.</p>
         <div className="mt-4 rounded-xl bg-slate-50 p-3 text-sm"><b>{Math.round(demandLoad)}%</b> weighted allocation demand across qualified and proposed opportunities.</div>
+        <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-950">
+          <div className="font-bold">Selected HubSpot deal</div>
+          <div className="mt-1 text-xs">{selectedDemand.sourceOpportunityId} · {selectedDemand.stage} · {money(selectedDemand.dealValue)}</div>
+          <div className="mt-1 text-xs">Sales: {selectedDemand.salesOwner} · Delivery: {selectedDemand.deliveryLead}</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {selectedDemand.hubspotDealUrl && <a href={selectedDemand.hubspotDealUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-white px-2 py-1 text-xs font-bold text-blue-700">Open HubSpot</a>}
+            {selectedEngagement && <button type="button" onClick={() => onOpenEngagement(selectedEngagement.id)} className="rounded-lg bg-white px-2 py-1 text-xs font-bold text-blue-700">Open engagement</button>}
+          </div>
+        </div>
         <div className="mt-4 space-y-3">
           {resourceDemands.map((demand) => (
             <button key={demand.id} onClick={() => setSelectedDemandId(demand.id)} className={`w-full rounded-xl border p-4 text-left ${selectedDemandId === demand.id ? "border-blue-400 bg-blue-50" : "border-slate-200 hover:bg-slate-50"}`}>
@@ -1318,7 +1629,8 @@ function DemandPanel({
   );
 }
 
-function PeopleDirectory({ people, assignments, financeVisible, draft, setDraft, addTeamMember, onOpenPerson }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; financeVisible: boolean; draft: NewMemberDraft; setDraft: (draft: NewMemberDraft) => void; addTeamMember: () => void; onOpenPerson: (personId: string) => void }) {
+function PeopleDirectory({ people, assignments, financeVisible, draft, setDraft, addTeamMember, onOpenPerson, currentUser }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; financeVisible: boolean; draft: NewMemberDraft; setDraft: (draft: NewMemberDraft) => void; addTeamMember: () => void; onOpenPerson: (personId: string) => void; currentUser: CurrentResourceUser | null }) {
+  const canEdit = currentUser?.canEdit ?? false;
   return (
     <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-200 px-5 py-4">
@@ -1344,11 +1656,12 @@ function PeopleDirectory({ people, assignments, financeVisible, draft, setDraft,
         </div>
         <button
           onClick={addTeamMember}
-          disabled={!draft.name.trim()}
+          disabled={!canEdit || !draft.name.trim()}
           className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <UserPlus size={16} /> Add team member
         </button>
+        {!canEdit && <p className="mt-2 text-xs text-slate-500">Read-only RBAC roles can inspect people but cannot add team members.</p>}
       </div>
       <div className="overflow-auto">
         <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -1405,17 +1718,21 @@ function BenchView({ people, assignments, onOpenPerson }: { people: ResourcePers
     const remaining = days.map((day) => getAvailablePct(assignments, person.id, day) - getBookedPct(assignments, person.id, day, false));
     const avg = Math.round(remaining.reduce((total, item) => total + item, 0) / remaining.length);
     const ending = assignments.find((assignment) => assignment.personId === person.id && assignment.end >= TODAY && assignment.end <= addDays(TODAY, 21) && assignment.type !== "Leave");
-    return { person, avg, ending };
+    const bench = benchDuration(person, assignments);
+    return { person, avg, ending, bench };
   }).sort((a, b) => b.avg - a.avg);
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
       <h2 className="text-lg font-bold text-slate-950">Bench & redeployment</h2>
       <p className="mt-1 text-sm text-slate-500">Bench is calculated from remaining daily capacity after leave and confirmed work.</p>
       <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {rows.map(({ person, avg, ending }) => (
+        {rows.map(({ person, avg, ending, bench }) => (
           <div key={person.id} className={`rounded-2xl border p-4 ${avg >= 50 ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}>
             <div className="flex items-center justify-between"><h3><PersonNameLink person={person} onOpenPerson={onOpenPerson} /></h3><span className="text-lg font-bold text-slate-900">{pct(avg)}</span></div>
             <div className="mt-1 text-sm text-slate-500">avg remaining next 10 business days</div>
+            <div className={`mt-3 rounded-lg p-2 text-xs font-semibold ${bench.days >= 14 ? "bg-red-100 text-red-700" : bench.days > 0 ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-700"}`}>
+              Bench duration: {bench.days === 0 ? bench.label : `${bench.days} days (${bench.label})`}
+            </div>
             <div className="mt-3 flex flex-wrap gap-1">{person.tags.map((item) => <span key={item} className="rounded bg-white px-2 py-0.5 text-xs font-semibold text-slate-600">{item}</span>)}</div>
             {ending && <div className="mt-3 rounded-lg bg-blue-50 p-2 text-xs font-semibold text-blue-700">Ending soon: {assignmentProject(ending).client} on {formatDate(ending.end)}</div>}
           </div>
@@ -1495,6 +1812,9 @@ function ApprovalsAudit({
   addComment,
   approveSelectedOverride,
   onOpenPerson,
+  comments,
+  addResourceComment,
+  currentUser,
 }: {
   assignments: ResourceAssignment[];
   people: ResourcePerson[];
@@ -1505,6 +1825,9 @@ function ApprovalsAudit({
   addComment: () => void;
   approveSelectedOverride: () => void;
   onOpenPerson: (personId: string) => void;
+  comments: ResourceComment[];
+  addResourceComment: (targetType: ResourceCommentTargetType, targetId: string, body: string) => void;
+  currentUser: CurrentResourceUser | null;
 }) {
   const approvals = assignments.filter((assignment) => {
     if (!assignment.personId || assignment.type === "Leave") return false;
@@ -1528,10 +1851,22 @@ function ApprovalsAudit({
           })}
         </div>
         <div className="mt-5 rounded-xl border border-slate-200 p-4">
-          <h3 className="flex items-center gap-2 font-bold text-slate-950"><MessageSquare size={16} /> Comments and mentions</h3>
+          <h3 className="flex items-center gap-2 font-bold text-slate-950"><MessageSquare size={16} /> Legacy audit note</h3>
           <textarea value={comment} onChange={(event) => setComment(event.target.value)} className="mt-3 h-24 w-full rounded-lg border border-slate-300 p-3 text-sm" />
-          <button onClick={addComment} className="mt-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Add comment</button>
+          <button onClick={addComment} className="mt-2 rounded-lg bg-slate-950 px-3 py-2 text-sm font-semibold text-white">Add audit note</button>
         </div>
+        {selectedAssignment && (
+          <div className="mt-5">
+            <CommentaryPanel
+              title="Selected assignment commentary"
+              targetType="assignment"
+              targetId={selectedAssignment.id}
+              comments={comments.filter((item) => item.targetId === selectedAssignment.id)}
+              currentUser={currentUser}
+              addResourceComment={addResourceComment}
+            />
+          </div>
+        )}
       </section>
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="text-lg font-bold text-slate-950">Audit history</h2>

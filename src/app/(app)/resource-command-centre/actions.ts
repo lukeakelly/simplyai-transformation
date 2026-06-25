@@ -2,6 +2,8 @@
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { getSession, requireEditor } from "@/lib/auth";
+import type { ResourceCommentTargetType } from "@/lib/resource-command-data";
 
 export type ResourcePlanningEventInput = {
   eventType: "planned-allocation" | "team-member" | "approval" | "resource-request";
@@ -21,6 +23,12 @@ export type ResourcePlanningEventInput = {
   payload: Prisma.InputJsonObject;
 };
 
+export type ResourceCommentInput = {
+  targetType: ResourceCommentTargetType;
+  targetId: string;
+  body: string;
+};
+
 function inputJsonObject(value: Prisma.InputJsonValue | null | undefined): Prisma.InputJsonObject {
   if (typeof value !== "object" || value === null || Array.isArray(value) || "toJSON" in value) return {};
   return value as Prisma.InputJsonObject;
@@ -32,6 +40,7 @@ function inputJsonString(value: Prisma.InputJsonValue | null | undefined, fallba
 
 export async function saveResourcePlanningEvent(input: ResourcePlanningEventInput) {
   try {
+    await requireEditor();
     if (input.eventType === "planned-allocation" && input.canonicalAllocationId && input.canonicalProjectId && input.startDate && input.endDate) {
       await prisma.resourcePlannedAllocation.upsert({
         where: { canonicalAllocationId: input.canonicalAllocationId },
@@ -90,5 +99,59 @@ export async function saveResourcePlanningEvent(input: ResourcePlanningEventInpu
   } catch (error) {
     console.error("Failed to persist resource planning event", error);
     return { ok: false };
+  }
+}
+
+export async function saveResourceComment(input: ResourceCommentInput) {
+  try {
+    const session = await requireEditor();
+    const body = input.body.trim();
+    if (!body) return { ok: false, error: "Comment cannot be empty." };
+
+    const comment = await prisma.resourceComment.create({
+      data: {
+        targetType: input.targetType,
+        targetId: input.targetId,
+        body,
+        authorId: session.userId,
+        authorName: session.name,
+        authorRole: session.role,
+      },
+    });
+
+    await prisma.resourceOutboundEvent.create({
+      data: {
+        eventType: "approval",
+        sourceRecordId: comment.id,
+        correlationId: `resource-comment-${comment.id}`,
+        payload: {
+          sourceOfTruth: "resource-app",
+          eventLabel: "Added resource comment",
+          targetType: input.targetType,
+          targetId: input.targetId,
+          body,
+          actor: session.role,
+          authorId: session.userId,
+        },
+      },
+    });
+
+    return {
+      ok: true,
+      comment: {
+        id: comment.id,
+        targetType: input.targetType,
+        targetId: input.targetId,
+        body,
+        authorId: session.userId,
+        authorName: session.name,
+        authorRole: session.role,
+        at: comment.createdAt.toISOString(),
+      },
+    };
+  } catch (error) {
+    const session = await getSession();
+    console.error("Failed to persist resource comment", { error, userId: session?.userId });
+    return { ok: false, error: "Comment could not be saved." };
   }
 }

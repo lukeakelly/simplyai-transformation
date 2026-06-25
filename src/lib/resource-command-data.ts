@@ -14,6 +14,9 @@ export type AssignmentStatus = "Confirmed" | "Tentative" | "Requested" | "Waitin
 export type AssignmentType = "Billable" | "Managed Service" | "Presales" | "Business Development" | "Internal" | "Training" | "Leave" | "Bench";
 export type DemandStatus = "Qualified" | "Proposed" | "Committed" | "Waiting List" | "Expired";
 export type MigrationSeverity = "Critical" | "Warning" | "Info";
+export type ResourceCommentTargetType = "assignment" | "person" | "project" | "demand";
+export type ResourceAccessRole = "Super Admin" | "Resource Admin" | "Delivery Lead" | "Sales" | "Finance" | "Read Only";
+
 
 export type ResourcePerson = {
   id: string;
@@ -41,6 +44,14 @@ export type ResourceProject = {
   pillar: string;
   deliveryLead: string;
   health: "Green" | "Amber" | "Red";
+  hubspotDealId: string | null;
+  hubspotDealUrl: string | null;
+  dealStage: string;
+  dealValue: number;
+  dealProbability: number;
+  expectedCloseDate: string | null;
+  salesOwner: string;
+  engagementStatus: string;
 };
 
 export type ResourceDemand = {
@@ -48,6 +59,11 @@ export type ResourceDemand = {
   client: string;
   opportunity: string;
   sourceOpportunityId: string;
+  hubspotDealUrl: string | null;
+  salesOwner: string;
+  deliveryLead: string;
+  dealValue: number;
+  expectedCloseDate: string | null;
   role: string;
   level: string;
   requiredSkills: string[];
@@ -107,6 +123,23 @@ export type ResourceAllocationHistoryEntry = {
   after?: ResourceAssignment | null;
 };
 
+export type ResourceComment = {
+  id: string;
+  targetType: ResourceCommentTargetType;
+  targetId: string;
+  body: string;
+  authorId: string | null;
+  authorName: string;
+  authorRole: string;
+  at: string;
+};
+
+export type ResourceRoleDefinition = {
+  role: ResourceAccessRole;
+  description: string;
+  permissions: string[];
+};
+
 export type MigrationIssue = {
   id: string;
   severity: MigrationSeverity;
@@ -140,6 +173,15 @@ function findClientName(canonicalClientId: string) {
 function findPersonName(canonicalPersonId: string | null) {
   if (!canonicalPersonId) return "Unassigned";
   return mlvizzSnapshot.people.find((person) => person.canonicalPersonId === canonicalPersonId)?.displayName ?? "Unknown person";
+}
+
+function hubspotDealUrl(hubspotDealId: string | null | undefined) {
+  return hubspotDealId ? `https://app.hubspot.com/contacts/deal/${hubspotDealId}` : null;
+}
+
+function opportunityForProjectDeal(hubspotDealId: string | null) {
+  if (!hubspotDealId) return null;
+  return mlvizzSnapshot.opportunities.find((opportunity) => opportunity.hubspotDealId === hubspotDealId) ?? null;
 }
 
 function titleCase(value: string) {
@@ -187,15 +229,26 @@ export const resourcePeople: ResourcePerson[] = mlvizzSnapshot.people.map((perso
   tags: [person.employmentStatus, person.lineage.sourceSystem, person.inactive ? "inactive" : "active"],
 }));
 
-export const resourceProjects: ResourceProject[] = mlvizzSnapshot.projects.map((project) => ({
-  id: project.canonicalProjectId,
-  client: findClientName(project.canonicalClientId),
-  name: project.projectName,
-  code: project.projectCode,
-  pillar: project.pillar,
-  deliveryLead: findPersonName(project.deliveryLeadCanonicalPersonId),
-  health: titleCase(project.health) as ResourceProject["health"],
-}));
+export const resourceProjects: ResourceProject[] = mlvizzSnapshot.projects.map((project) => {
+  const opportunity = opportunityForProjectDeal(project.hubspotDealId);
+  return {
+    id: project.canonicalProjectId,
+    client: findClientName(project.canonicalClientId),
+    name: project.projectName,
+    code: project.projectCode,
+    pillar: project.pillar,
+    deliveryLead: findPersonName(project.deliveryLeadCanonicalPersonId),
+    health: titleCase(project.health) as ResourceProject["health"],
+    hubspotDealId: project.hubspotDealId,
+    hubspotDealUrl: hubspotDealUrl(project.hubspotDealId),
+    dealStage: opportunity ? titleCase(opportunity.dealStage) : titleCase(project.engagementStatus),
+    dealValue: opportunity?.estimatedValue ?? 0,
+    dealProbability: opportunity?.probabilityPct ?? 100,
+    expectedCloseDate: opportunity?.expectedCloseDate ?? null,
+    salesOwner: findPersonName(opportunity?.ownerCanonicalPersonId ?? null),
+    engagementStatus: titleCase(project.engagementStatus),
+  };
+});
 
 export const resourceAssignments: ResourceAssignment[] = mlvizzSnapshot.plannedAllocations.map((allocation) => ({
   id: allocation.canonicalAllocationId,
@@ -244,6 +297,11 @@ export const resourceDemands: ResourceDemand[] = mlvizzSnapshot.resourceRequests
     client: clientName,
     opportunity: opportunity?.opportunityName ?? request.requestedRole,
     sourceOpportunityId: opportunity?.hubspotDealId ?? "not-yet-mapped",
+    hubspotDealUrl: hubspotDealUrl(opportunity?.hubspotDealId),
+    salesOwner: findPersonName(opportunity?.ownerCanonicalPersonId ?? null),
+    deliveryLead: findPersonName(mlvizzSnapshot.projects.find((project) => project.canonicalProjectId === request.canonicalProjectId)?.deliveryLeadCanonicalPersonId ?? null),
+    dealValue: opportunity?.estimatedValue ?? 0,
+    expectedCloseDate: opportunity?.expectedCloseDate ?? null,
     role: request.requestedRole,
     level: request.requestedGrade,
     requiredSkills: request.requiredSkills,
@@ -279,6 +337,38 @@ export const financialActuals: MLVizzFinancialActual[] = mlvizzSnapshot.financia
 export const identityMappings: MLVizzIdentityMapping[] = mlvizzSnapshot.identityMappings;
 export const reconciliationSummaries: MLVizzReconciliationSummary[] = mlvizzSnapshot.reconciliation;
 export const refreshRuns: MLVizzRefreshRun[] = mlvizzSnapshot.refreshRuns;
+
+export const resourceRoleDefinitions: ResourceRoleDefinition[] = [
+  { role: "Super Admin", description: "Owns SSO/RBAC configuration and all resource controls.", permissions: ["manage users", "configure SSO", "edit all planning data", "view finance"] },
+  { role: "Resource Admin", description: "Runs workforce planning and allocation governance.", permissions: ["edit allocations", "approve exceptions", "add comments", "view finance"] },
+  { role: "Delivery Lead", description: "Manages delivery staffing and engagement health.", permissions: ["edit assigned engagements", "comment", "view delivery data"] },
+  { role: "Sales", description: "Owns HubSpot deal context and demand qualification.", permissions: ["view pipeline", "comment", "update demand context"] },
+  { role: "Finance", description: "Views rates, invoiced actuals and paid actuals.", permissions: ["view finance", "comment", "export plan"] },
+  { role: "Read Only", description: "Can inspect data without changing planning records.", permissions: ["view only"] },
+];
+
+export const resourceComments: ResourceComment[] = [
+  {
+    id: "rc-comment-apa",
+    targetType: "project",
+    targetId: "project-apa-dpu",
+    body: "APA demand is stable for July; keep Ava allocated unless HubSpot stage regresses.",
+    authorId: null,
+    authorName: "Luke",
+    authorRole: "COO",
+    at: mlvizzSnapshot.metadata.applicationIngestedAt,
+  },
+  {
+    id: "rc-comment-bench",
+    targetType: "person",
+    targetId: "person-diya",
+    body: "Prioritise Diya for Cleanaway data engineering demand before adding contractor capacity.",
+    authorId: null,
+    authorName: "Maya Chen",
+    authorRole: "Resource Admin",
+    at: mlvizzSnapshot.metadata.applicationIngestedAt,
+  },
+];
 
 export const migrationIssues: MigrationIssue[] = [
   ...mlvizzSnapshot.failedRecords.map((record): MigrationIssue => ({

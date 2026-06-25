@@ -152,6 +152,20 @@ model ResourceAllocationHistory {
   @@index([createdAt])
 }
 
+model ResourceComment {
+  id          String   @id @default(cuid())
+  targetType  String
+  targetId    String
+  body        String
+  authorId    String?
+  authorName  String
+  authorRole  String
+  createdAt   DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
 model ResourceSyncRun {
   id                 String   @id @default(cuid())
   refreshRunId       String   @unique
