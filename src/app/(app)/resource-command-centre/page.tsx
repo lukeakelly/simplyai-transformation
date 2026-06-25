@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
+import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { resourceAssignments, type ResourceAllocationHistoryEntry, type ResourceAssignment } from "@/lib/resource-command-data";
+import { resourceAssignments, type ResourceAllocationHistoryEntry, type ResourceAssignment, type ResourceComment } from "@/lib/resource-command-data";
 import { ResourceCommandCentreClient } from "./ResourceCommandCentreClient";
 
 export const dynamic = "force-dynamic";
@@ -109,7 +110,30 @@ function toOperationalHistory(record: {
   };
 }
 
+function toResourceComment(record: {
+  id: string;
+  targetType: string;
+  targetId: string;
+  body: string;
+  authorId: string | null;
+  authorName: string;
+  authorRole: string;
+  createdAt: Date;
+}): ResourceComment {
+  return {
+    id: record.id,
+    targetType: record.targetType as ResourceComment["targetType"],
+    targetId: record.targetId,
+    body: record.body,
+    authorId: record.authorId,
+    authorName: record.authorName,
+    authorRole: record.authorRole,
+    at: record.createdAt.toISOString(),
+  };
+}
+
 export default async function ResourceCommandCentrePage() {
+  const session = await getSession();
   const operationalRecords = await prisma.resourcePlannedAllocation.findMany({
     orderBy: { updatedAt: "desc" },
   });
@@ -123,6 +147,16 @@ export default async function ResourceCommandCentrePage() {
   } catch (error) {
     console.error("Failed to load resource allocation history", error);
   }
+  let operationalComments: ResourceComment[] = [];
+  try {
+    const commentRecords = await prisma.resourceComment.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 300,
+    });
+    operationalComments = commentRecords.map(toResourceComment);
+  } catch (error) {
+    console.error("Failed to load resource comments", error);
+  }
   const operationalAssignments = operationalRecords
     .map(toOperationalAssignment)
     .filter((assignment): assignment is ResourceAssignment => assignment !== null);
@@ -131,5 +165,12 @@ export default async function ResourceCommandCentrePage() {
     ...operationalAssignments,
     ...resourceAssignments.filter((assignment) => !operationalIds.has(assignment.id)),
   ];
-  return <ResourceCommandCentreClient initialAssignments={initialAssignments} initialAllocationHistory={operationalHistory} />;
+  return (
+    <ResourceCommandCentreClient
+      initialAssignments={initialAssignments}
+      initialAllocationHistory={operationalHistory}
+      initialComments={operationalComments}
+      currentUser={session ? { id: session.userId, name: session.name, role: session.role, permission: session.permission, canEdit: session.canEdit, isAdmin: session.isAdmin } : null}
+    />
+  );
 }

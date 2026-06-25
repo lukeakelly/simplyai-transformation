@@ -29,13 +29,14 @@ type Account = {
 
 const ACCOUNTS: Account[] = [
   { username: "ceo", name: "Jason", role: "CEO", permission: "editor", isAdmin: false },
-  { username: "coo", name: "Luke", role: "COO", permission: "editor", isAdmin: true },
+  { username: "superadmin", name: "Super Admin", role: "Super Admin", permission: "editor", isAdmin: true },
+  { username: "coo", name: "Luke", role: "Resource Admin", permission: "editor", isAdmin: true },
   { username: "cfo", name: "Wayne", role: "CFO", permission: "editor", isAdmin: false },
   { username: "cro", name: "CRO", role: "CRO", permission: "editor", isAdmin: false },
   { username: "cto", name: "CTO", role: "CTO", permission: "editor", isAdmin: false },
   { username: "cino", name: "Gina", role: "CInO", permission: "editor", isAdmin: false },
   { username: "ctro", name: "Kylie", role: "CTRO", permission: "editor", isAdmin: false },
-  { username: "viewer", name: "Reviewer", role: "Viewer", permission: "viewer", isAdmin: false },
+  { username: "viewer", name: "Reviewer", role: "Read Only", permission: "viewer", isAdmin: false },
 ];
 
 async function main() {

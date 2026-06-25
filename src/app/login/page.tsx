@@ -24,6 +24,14 @@ export default async function LoginPage() {
           <p className="text-sm text-slate-500 mb-5">
             Use the credentials for your role.
           </p>
+          <button
+            type="button"
+            disabled
+            className="mb-4 w-full rounded-lg border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-500"
+            title="Configure SSO_PROVIDER, SSO_CLIENT_ID, SSO_CLIENT_SECRET and SSO_ISSUER_URL to enable."
+          >
+            Sign in with SSO — configuration required
+          </button>
           <LoginForm />
         </div>
       </div>
