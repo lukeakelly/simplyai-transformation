@@ -134,6 +134,24 @@ model ResourcePlannedAllocation {
   @@index([status])
 }
 
+model ResourceAllocationHistory {
+  id                    String   @id @default(cuid())
+  canonicalAllocationId String
+  canonicalPersonId     String?
+  canonicalProjectId    String
+  action                String
+  actor                 String
+  summary               String
+  beforePayload         Json
+  afterPayload          Json
+  createdAt             DateTime @default(now())
+
+  @@index([canonicalAllocationId])
+  @@index([canonicalPersonId])
+  @@index([canonicalProjectId])
+  @@index([createdAt])
+}
+
 model ResourceSyncRun {
   id                 String   @id @default(cuid())
   refreshRunId       String   @unique

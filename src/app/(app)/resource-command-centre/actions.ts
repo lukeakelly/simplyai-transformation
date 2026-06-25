@@ -21,6 +21,15 @@ export type ResourcePlanningEventInput = {
   payload: Prisma.InputJsonObject;
 };
 
+function inputJsonObject(value: Prisma.InputJsonValue | null | undefined): Prisma.InputJsonObject {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || "toJSON" in value) return {};
+  return value as Prisma.InputJsonObject;
+}
+
+function inputJsonString(value: Prisma.InputJsonValue | null | undefined, fallback: string) {
+  return typeof value === "string" ? value : fallback;
+}
+
 export async function saveResourcePlanningEvent(input: ResourcePlanningEventInput) {
   try {
     if (input.eventType === "planned-allocation" && input.canonicalAllocationId && input.canonicalProjectId && input.startDate && input.endDate) {
@@ -52,6 +61,18 @@ export async function saveResourcePlanningEvent(input: ResourcePlanningEventInpu
           allocationPct: input.allocationPct ?? 0,
           confidencePct: input.confidencePct ?? 0,
           payload: input.payload,
+        },
+      });
+      await prisma.resourceAllocationHistory.create({
+        data: {
+          canonicalAllocationId: input.canonicalAllocationId,
+          canonicalPersonId: input.canonicalPersonId,
+          canonicalProjectId: input.canonicalProjectId,
+          action: inputJsonString(input.payload.eventLabel, "Updated allocation"),
+          actor: inputJsonString(input.payload.actor, "COO / Resource Manager"),
+          summary: inputJsonString(input.payload.historySummary, "Allocation changed in the resource planning workspace."),
+          beforePayload: inputJsonObject(input.payload.beforeAssignment),
+          afterPayload: inputJsonObject(input.payload.afterAssignment),
         },
       });
     }

@@ -94,6 +94,19 @@ export type AuditEntry = {
   at: string;
 };
 
+export type ResourceAllocationHistoryEntry = {
+  id: string;
+  assignmentId: string;
+  personId: string | null;
+  projectId: string;
+  action: string;
+  actor: string;
+  at: string;
+  summary: string;
+  before?: ResourceAssignment | null;
+  after?: ResourceAssignment | null;
+};
+
 export type MigrationIssue = {
   id: string;
   severity: MigrationSeverity;
@@ -197,6 +210,19 @@ export const resourceAssignments: ResourceAssignment[] = mlvizzSnapshot.plannedA
   confidence: allocation.confidencePct,
   source: allocation.source,
   notes: allocation.notes,
+}));
+
+export const resourceAllocationHistory: ResourceAllocationHistoryEntry[] = resourceAssignments.map((assignment) => ({
+  id: `hist-${assignment.id}-mlvizz`,
+  assignmentId: assignment.id,
+  personId: assignment.personId,
+  projectId: assignment.projectId,
+  action: "Imported allocation",
+  actor: "MLVizz Sync",
+  at: mlvizzSnapshot.metadata.applicationIngestedAt,
+  summary: `${assignment.status} ${assignment.allocationPct}% ${assignment.role} imported from ${assignment.source} for ${assignment.start} to ${assignment.end}.`,
+  before: null,
+  after: assignment,
 }));
 
 export const resourceDemands: ResourceDemand[] = mlvizzSnapshot.resourceRequests.map((request) => {

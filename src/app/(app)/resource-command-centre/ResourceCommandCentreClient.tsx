@@ -1,17 +1,19 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { DragEvent } from "react";
+import type { DragEvent, KeyboardEvent } from "react";
 import {
   AlertTriangle,
   ArrowRightLeft,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   Download,
   FileSpreadsheet,
   Filter,
   Lock,
   MessageSquare,
-  MousePointer2,
   PanelRightOpen,
   Search,
   ShieldCheck,
@@ -19,6 +21,7 @@ import {
   SplitSquareHorizontal,
   UserCheck,
   UserPlus,
+  X,
 } from "lucide-react";
 import {
   TODAY,
@@ -34,6 +37,7 @@ import {
   mlvizzSnapshot,
   money,
   overlaps,
+  resourceAllocationHistory,
   reconciliationSummaries,
   resourceAssignments,
   resourceDemands,
@@ -43,6 +47,7 @@ import {
   type AssignmentStatus,
   type AssignmentType,
   type AuditEntry,
+  type ResourceAllocationHistoryEntry,
   type ResourceAssignment,
   type ResourceDemand,
   type ResourcePerson,
@@ -138,10 +143,48 @@ function formatTimestamp(value: string) {
   }).format(new Date(value));
 }
 
+function formatHistoryDate(value: string) {
+  return new Intl.DateTimeFormat("en-AU", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Australia/Sydney",
+  }).format(new Date(value));
+}
+
 function assignmentDurationDays(assignment: ResourceAssignment) {
   const start = Date.parse(`${assignment.start}T00:00:00.000Z`);
   const end = Date.parse(`${assignment.end}T00:00:00.000Z`);
   return Math.max(0, Math.round((end - start) / 86400000));
+}
+
+function assignmentSnapshot(assignment: ResourceAssignment) {
+  return {
+    id: assignment.id,
+    personId: assignment.personId,
+    projectId: assignment.projectId,
+    type: assignment.type,
+    status: assignment.status,
+    role: assignment.role,
+    start: assignment.start,
+    end: assignment.end,
+    allocationPct: assignment.allocationPct,
+    confidence: assignment.confidence,
+    source: assignment.source,
+    notes: assignment.notes,
+    override: assignment.override ?? null,
+  };
+}
+
+function personLabel(people: ResourcePerson[], personId: string | null) {
+  if (!personId) return "Unfilled";
+  return people.find((person) => person.id === personId)?.name ?? personId;
+}
+
+function describeAssignmentHistory(people: ResourcePerson[], before: ResourceAssignment | null, after: ResourceAssignment) {
+  if (!before) {
+    return `${personLabel(people, after.personId)} assigned to ${after.role} at ${pct(after.allocationPct)} from ${formatDate(after.start)} to ${formatDate(after.end)}.`;
+  }
+  return `${personLabel(people, before.personId)} ${formatDate(before.start)}-${formatDate(before.end)} ${pct(before.allocationPct)} → ${personLabel(people, after.personId)} ${formatDate(after.start)}-${formatDate(after.end)} ${pct(after.allocationPct)}.`;
 }
 
 function compactName(name: string) {
@@ -248,12 +291,26 @@ function buildExport(assignments: ResourceAssignment[], people: ResourcePerson[]
   return rows.map((row) => row.map((cell) => `"${cell.replaceAll("\"", "\"\"")}"`).join(",")).join("\n");
 }
 
-export function ResourceCommandCentreClient({ initialAssignments }: { initialAssignments?: ResourceAssignment[] }) {
+export function ResourceCommandCentreClient({
+  initialAssignments,
+  initialAllocationHistory = [],
+}: {
+  initialAssignments?: ResourceAssignment[];
+  initialAllocationHistory?: ResourceAllocationHistoryEntry[];
+}) {
   const [activeTab, setActiveTab] = useState<Tab>("centre");
   const [people, setPeople] = useState<ResourcePerson[]>(resourcePeople);
   const [assignments, setAssignments] = useState<ResourceAssignment[]>(initialAssignments ?? resourceAssignments);
+  const [allocationHistory, setAllocationHistory] = useState<ResourceAllocationHistoryEntry[]>(() => {
+    const persistedHistoryIds = new Set(initialAllocationHistory.map((entry) => entry.id));
+    return [
+      ...initialAllocationHistory,
+      ...resourceAllocationHistory.filter((entry) => !persistedHistoryIds.has(entry.id)),
+    ];
+  });
   const [audit, setAudit] = useState<AuditEntry[]>(auditEntries);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>(resourceAssignments[0]?.id ?? "");
+  const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [selectedDemandId, setSelectedDemandId] = useState(resourceDemands[0]?.id ?? "");
   const [conflict, setConflict] = useState<ConflictDraft | null>(null);
   const [search, setSearch] = useState("");
@@ -264,9 +321,13 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
   const [overrideReason, setOverrideReason] = useState("Delivery continuity approved by COO");
   const [comment, setComment] = useState("@Maya please review this clash before Friday.");
   const [newMemberDraft, setNewMemberDraft] = useState<NewMemberDraft>(defaultNewMemberDraft);
+  const [scheduleStartDate, setScheduleStartDate] = useState(TODAY);
+  const [scheduleWindowDays, setScheduleWindowDays] = useState(130);
 
-  const scheduleDays = useMemo(() => businessDays(TODAY, 15), []);
+  const scheduleDays = useMemo(() => businessDays(scheduleStartDate, scheduleWindowDays), [scheduleStartDate, scheduleWindowDays]);
+  const scheduleEndDate = scheduleDays[scheduleDays.length - 1] ?? scheduleStartDate;
   const selectedAssignment = assignments.find((assignment) => assignment.id === selectedAssignmentId) ?? assignments[0];
+  const selectedPerson = selectedPersonId ? people.find((person) => person.id === selectedPersonId) ?? null : null;
   const selectedDemand = resourceDemands.find((demand) => demand.id === selectedDemandId) ?? resourceDemands[0];
   const selectedMatches = useMemo(() => matchCandidates(selectedDemand, assignments, people), [assignments, people, selectedDemand]);
   const pillars = [...new Set(people.map((person) => person.pillar))];
@@ -316,7 +377,25 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
     setAudit((items) => [next, ...items]);
   }
 
-  function persistAssignment(assignment: ResourceAssignment, eventLabel: string) {
+  function openPersonDetail(personId: string) {
+    setSelectedPersonId(personId);
+  }
+
+  function persistAssignment(assignment: ResourceAssignment, eventLabel: string, previous: ResourceAssignment | null = null) {
+    const historySummary = describeAssignmentHistory(people, previous, assignment);
+    const historyEntry: ResourceAllocationHistoryEntry = {
+      id: `hist-${Date.now()}-${assignment.id}`,
+      assignmentId: assignment.id,
+      personId: assignment.personId,
+      projectId: assignment.projectId,
+      action: eventLabel,
+      actor: "COO / Resource Manager",
+      at: new Date().toISOString(),
+      summary: historySummary,
+      before: previous,
+      after: assignment,
+    };
+    setAllocationHistory((items) => [historyEntry, ...items]);
     void saveResourcePlanningEvent({
       eventType: "planned-allocation",
       sourceRecordId: assignment.id,
@@ -342,6 +421,10 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
         end: assignment.end,
         allocationPct: assignment.allocationPct,
         sourceOfTruth: "resource-app",
+        actor: "COO / Resource Manager",
+        historySummary,
+        beforeAssignment: previous ? assignmentSnapshot(previous) : {},
+        afterAssignment: assignmentSnapshot(assignment),
       },
     });
   }
@@ -374,6 +457,7 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
     setPeople((items) => [...items, created]);
     setSearch(name);
     setActiveTab("people");
+    setSelectedPersonId(created.id);
     setNewMemberDraft(defaultNewMemberDraft);
     appendAudit("Added team member", created.name, `${created.employeeNo} added to ${created.pillar} with ${created.skills.join(", ")}.`);
     void saveResourcePlanningEvent({
@@ -405,7 +489,7 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
     );
     setSelectedAssignmentId(assignmentId);
     appendAudit("Moved assignment", targetPerson?.name ?? "Unknown person", `${current.role} moved to ${formatDate(date)}.`);
-    persistAssignment(updated, "Moved assignment");
+    persistAssignment(updated, "Moved assignment", current);
   }
 
   function createAssignmentFromDemand(demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") {
@@ -468,7 +552,7 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
       ),
     );
     appendAudit("Resized assignment", selectedAssignment.role, `${days > 0 ? "Extended" : "Shortened"} assignment by ${Math.abs(days)} day(s).`);
-    persistAssignment(updated, "Resized assignment");
+    persistAssignment(updated, "Resized assignment", selectedAssignment);
   }
 
   function splitAssignment() {
@@ -486,7 +570,7 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
       items.map((assignment) => (assignment.id === selectedAssignment.id ? { ...assignment, end: splitDate } : assignment)).concat(second),
     );
     appendAudit("Split assignment", selectedAssignment.role, `Split at ${formatDate(splitDate)} with daily history retained.`);
-    persistAssignment({ ...selectedAssignment, end: splitDate }, "Split assignment first segment");
+    persistAssignment({ ...selectedAssignment, end: splitDate }, "Split assignment first segment", selectedAssignment);
     persistAssignment(second, "Split assignment second segment");
   }
 
@@ -505,7 +589,7 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
       ),
     );
     appendAudit("Approved exception", selectedAssignment.role, `${overrideReason}; expires ${formatDate(addDays(TODAY, 14))}.`);
-    persistAssignment(updated, "Approved exception");
+    persistAssignment(updated, "Approved exception", selectedAssignment);
   }
 
   function addComment() {
@@ -576,6 +660,11 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
             assignments={assignments}
             people={filteredPeople}
             days={scheduleDays}
+            scheduleStartDate={scheduleStartDate}
+            scheduleEndDate={scheduleEndDate}
+            scheduleWindowDays={scheduleWindowDays}
+            setScheduleWindowDays={setScheduleWindowDays}
+            setScheduleStartDate={setScheduleStartDate}
             selectedAssignment={selectedAssignment}
             selectedDemand={selectedDemand}
             selectedMatches={selectedMatches}
@@ -583,6 +672,7 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
             overrideReason={overrideReason}
             setOverrideReason={setOverrideReason}
             setSelectedAssignmentId={setSelectedAssignmentId}
+            onOpenPerson={openPersonDetail}
             onDropCell={onDropCell}
             resizeAssignment={resizeAssignment}
             splitAssignment={splitAssignment}
@@ -591,13 +681,138 @@ export function ResourceCommandCentreClient({ initialAssignments }: { initialAss
           />
         )}
         {activeTab === "demand" && (
-          <DemandPanel assignments={assignments} selectedDemandId={selectedDemandId} setSelectedDemandId={setSelectedDemandId} selectedMatches={selectedMatches} createAssignmentFromDemand={createAssignmentFromDemand} />
+          <DemandPanel assignments={assignments} selectedDemandId={selectedDemandId} setSelectedDemandId={setSelectedDemandId} selectedMatches={selectedMatches} createAssignmentFromDemand={createAssignmentFromDemand} onOpenPerson={openPersonDetail} />
         )}
-        {activeTab === "people" && <PeopleDirectory people={filteredPeople} assignments={assignments} financeVisible={financeVisible} draft={newMemberDraft} setDraft={setNewMemberDraft} addTeamMember={addTeamMember} />}
-        {activeTab === "bench" && <BenchView people={filteredPeople} assignments={assignments} />}
+        {activeTab === "people" && <PeopleDirectory people={filteredPeople} assignments={assignments} financeVisible={financeVisible} draft={newMemberDraft} setDraft={setNewMemberDraft} addTeamMember={addTeamMember} onOpenPerson={openPersonDetail} />}
+        {activeTab === "bench" && <BenchView people={filteredPeople} assignments={assignments} onOpenPerson={openPersonDetail} />}
         {activeTab === "migration" && <MigrationReview />}
-        {activeTab === "approvals" && <ApprovalsAudit assignments={assignments} people={people} audit={audit} selectedAssignment={selectedAssignment} comment={comment} setComment={setComment} addComment={addComment} approveSelectedOverride={approveSelectedOverride} />}
+        {activeTab === "approvals" && <ApprovalsAudit assignments={assignments} people={people} audit={audit} selectedAssignment={selectedAssignment} comment={comment} setComment={setComment} addComment={addComment} approveSelectedOverride={approveSelectedOverride} onOpenPerson={openPersonDetail} />}
       </main>
+      {selectedPerson && (
+        <PersonDetailModal
+          person={selectedPerson}
+          assignments={assignments}
+          allocationHistory={allocationHistory}
+          financeVisible={financeVisible}
+          onClose={() => setSelectedPersonId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function PersonNameLink({ person, onOpenPerson, className = "" }: { person: ResourcePerson; onOpenPerson: (personId: string) => void; className?: string }) {
+  function open() {
+    onOpenPerson(person.id);
+  }
+  function handleKeyDown(event: KeyboardEvent<HTMLSpanElement>) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      event.stopPropagation();
+      open();
+    }
+  }
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={(event) => {
+        event.stopPropagation();
+        open();
+      }}
+      onKeyDown={handleKeyDown}
+      className={`cursor-pointer font-bold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-300 ${className}`}
+    >
+      {person.name}
+    </span>
+  );
+}
+
+function PersonDetailModal({
+  person,
+  assignments,
+  allocationHistory,
+  financeVisible,
+  onClose,
+}: {
+  person: ResourcePerson;
+  assignments: ResourceAssignment[];
+  allocationHistory: ResourceAllocationHistoryEntry[];
+  financeVisible: boolean;
+  onClose: () => void;
+}) {
+  const personAssignments = assignments
+    .filter((assignment) => assignment.personId === person.id)
+    .sort((a, b) => a.start.localeCompare(b.start));
+  const history = allocationHistory.filter((entry) => entry.personId === person.id || entry.before?.personId === person.id || entry.after?.personId === person.id);
+  const currentLoad = getBookedPct(assignments, person.id, TODAY, false);
+  const availableToday = getAvailablePct(assignments, person.id, TODAY);
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/50 p-4 backdrop-blur-sm">
+      <div className="mx-auto flex max-h-[92vh] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{person.employeeNo} · {person.pillar}</div>
+            <h2 className="mt-1 text-2xl font-bold text-slate-950">{person.name}</h2>
+            <p className="text-sm text-slate-500">{person.role} · {person.level} · {person.location} · Manager: {person.manager}</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-full border border-slate-200 p-2 text-slate-500 hover:bg-slate-50" aria-label="Close person detail"><X size={18} /></button>
+        </div>
+        <div className="overflow-auto p-5">
+          <div className="grid gap-4 md:grid-cols-4">
+            <DrawerField label="Current load" value={`${pct(currentLoad)} / ${pct(availableToday)}`} />
+            <DrawerField label="Capacity" value={`${person.dailyCapacityHours}h/day`} />
+            <DrawerField label="Employment" value={person.employmentType} />
+            <DrawerField label="Rates" value={financeVisible ? `${money(person.billRate)} / ${money(person.costRate)}` : "Restricted"} />
+          </div>
+          <div className="mt-5 rounded-2xl border border-slate-200 p-4">
+            <h3 className="font-bold text-slate-950">Skills and tags</h3>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {[...person.skills, ...person.certifications, ...person.tags].map((item, index) => <span key={`${item}-${index}`} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">{item}</span>)}
+            </div>
+          </div>
+          <div className="mt-5 grid gap-5 xl:grid-cols-2">
+            <section className="rounded-2xl border border-slate-200 p-4">
+              <h3 className="font-bold text-slate-950">Current and future allocations</h3>
+              <div className="mt-3 space-y-3">
+                {personAssignments.map((assignment) => {
+                  const project = assignmentProject(assignment);
+                  return (
+                    <div key={assignment.id} className="rounded-xl border border-slate-200 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-bold text-slate-950">{project.client} · {assignment.role}</div>
+                          <div className="text-xs text-slate-500">{assignment.start} to {assignment.end} · {assignment.source}</div>
+                        </div>
+                        <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-bold text-blue-700">{assignment.status}</span>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-600">{pct(assignment.allocationPct)} · {assignment.type} · {pct(assignment.confidence)} confidence</div>
+                    </div>
+                  );
+                })}
+                {personAssignments.length === 0 && <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No current allocations for this person.</p>}
+              </div>
+            </section>
+            <section className="rounded-2xl border border-slate-200 p-4">
+              <h3 className="font-bold text-slate-950">Allocation history</h3>
+              <p className="mt-1 text-sm text-slate-500">Preserved from MLVizz imports and every app-owned scheduling edit.</p>
+              <div className="mt-3 max-h-[420px] space-y-3 overflow-auto pr-1">
+                {history.map((entry) => (
+                  <div key={entry.id} className="rounded-xl border border-slate-200 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold text-slate-950">{entry.action}</span>
+                      <span className="text-xs text-slate-500">{formatHistoryDate(entry.at)}</span>
+                    </div>
+                    <div className="mt-1 text-sm text-slate-600">{entry.summary}</div>
+                    <div className="mt-2 text-xs font-semibold uppercase tracking-wide text-slate-400">{entry.actor} · {entry.assignmentId}</div>
+                  </div>
+                ))}
+                {history.length === 0 && <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No allocation history recorded for this person yet.</p>}
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -802,6 +1017,11 @@ function Schedule({
   assignments,
   people,
   days,
+  scheduleStartDate,
+  scheduleEndDate,
+  scheduleWindowDays,
+  setScheduleWindowDays,
+  setScheduleStartDate,
   selectedAssignment,
   selectedDemand,
   selectedMatches,
@@ -809,6 +1029,7 @@ function Schedule({
   overrideReason,
   setOverrideReason,
   setSelectedAssignmentId,
+  onOpenPerson,
   onDropCell,
   resizeAssignment,
   splitAssignment,
@@ -818,6 +1039,11 @@ function Schedule({
   assignments: ResourceAssignment[];
   people: ResourcePerson[];
   days: string[];
+  scheduleStartDate: string;
+  scheduleEndDate: string;
+  scheduleWindowDays: number;
+  setScheduleWindowDays: (days: number) => void;
+  setScheduleStartDate: (date: string) => void;
   selectedAssignment?: ResourceAssignment;
   selectedDemand: ResourceDemand;
   selectedMatches: MatchResult[];
@@ -825,6 +1051,7 @@ function Schedule({
   overrideReason: string;
   setOverrideReason: (value: string) => void;
   setSelectedAssignmentId: (id: string) => void;
+  onOpenPerson: (personId: string) => void;
   onDropCell: (event: DragEvent<HTMLDivElement>, person: ResourcePerson, date: string) => void;
   resizeAssignment: (days: number) => void;
   splitAssignment: () => void;
@@ -832,21 +1059,31 @@ function Schedule({
   createAssignmentFromDemand: (demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") => void;
 }) {
   return (
-    <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[1fr_360px]">
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div>
+    <div className="grid min-w-0 grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1fr)_360px]">
+      <section className="min-w-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-4 border-b border-slate-200 px-5 py-4">
+          <div className="min-w-0">
             <h2 className="text-lg font-bold text-slate-950">Daily schedule</h2>
-            <p className="text-sm text-slate-500">Drag assignment cards or demand items onto a person and date. Leave reduces available capacity before conflicts are evaluated.</p>
+            <p className="text-sm text-slate-500">Drag assignment cards or demand items onto a person and date. Showing {days.length} business days from {formatDate(scheduleStartDate)} to {formatDate(scheduleEndDate)}.</p>
           </div>
-          <div className="hidden items-center gap-2 text-xs text-slate-500 md:flex"><MousePointer2 size={14} /> Day-level operational source of truth</div>
+          <div className="flex w-full flex-wrap items-center gap-2 text-xs text-slate-600">
+            <button type="button" onClick={() => setScheduleStartDate(addDays(scheduleStartDate, -30))} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 font-semibold hover:bg-slate-50"><ChevronLeft size={14} /> 1 month</button>
+            <button type="button" onClick={() => setScheduleStartDate(TODAY)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 font-semibold hover:bg-slate-50"><CalendarDays size={14} /> Today</button>
+            <button type="button" onClick={() => setScheduleStartDate(addDays(scheduleStartDate, 30))} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 font-semibold hover:bg-slate-50">1 month <ChevronRight size={14} /></button>
+            <button type="button" onClick={() => setScheduleStartDate(addDays(scheduleStartDate, 90))} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 font-semibold hover:bg-slate-50">1 quarter <ChevronRight size={14} /></button>
+            <select value={scheduleWindowDays} onChange={(event) => setScheduleWindowDays(Number(event.target.value))} className="rounded-lg border border-slate-300 bg-white px-3 py-2 font-semibold">
+              <option value={30}>30 business days</option>
+              <option value={65}>65 business days</option>
+              <option value={130}>130 business days</option>
+            </select>
+          </div>
         </div>
-        <div className="overflow-auto">
-          <div className="min-w-[1180px]">
-            <div className="grid border-b border-slate-200 bg-slate-50" style={{ gridTemplateColumns: `220px repeat(${days.length}, minmax(92px, 1fr))` }}>
-              <div className="sticky left-0 z-10 border-r border-slate-200 bg-slate-50 p-3 text-xs font-bold uppercase tracking-wide text-slate-500">Person</div>
+        <div className="max-h-[70vh] w-full max-w-full overflow-auto">
+          <div className="w-max min-w-[1180px]">
+            <div className="sticky top-0 z-30 grid border-b border-slate-200 bg-slate-50 shadow-sm" style={{ gridTemplateColumns: `220px repeat(${days.length}, minmax(92px, 1fr))` }}>
+              <div className="sticky left-0 top-0 z-40 border-r border-slate-200 bg-slate-50 p-3 text-xs font-bold uppercase tracking-wide text-slate-500">Person</div>
               {days.map((day) => (
-                <div key={day} className="border-r border-slate-200 p-3 text-center text-xs font-bold text-slate-600">{formatDate(day)}</div>
+                <div key={day} className="sticky top-0 z-30 border-r border-slate-200 bg-slate-50 p-3 text-center text-xs font-bold text-slate-600">{formatDate(day)}</div>
               ))}
             </div>
             {people.map((person) => (
@@ -855,7 +1092,7 @@ function Schedule({
                   <div className="flex items-center gap-3">
                     <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">{compactName(person.name)}</div>
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-bold text-slate-950">{person.name}</div>
+                      <div className="truncate text-sm"><PersonNameLink person={person} onOpenPerson={onOpenPerson} className="text-sm" /></div>
                       <div className="truncate text-xs text-slate-500">{person.level} · {person.location}</div>
                     </div>
                   </div>
@@ -905,13 +1142,13 @@ function Schedule({
       <aside className="space-y-4">
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="flex items-center gap-2 text-base font-bold text-slate-950"><PanelRightOpen size={18} /> Assignment drawer</h3>
-          {selectedAssignment ? <AssignmentDrawer assignment={selectedAssignment} people={people} resizeAssignment={resizeAssignment} splitAssignment={splitAssignment} approveSelectedOverride={approveSelectedOverride} overrideReason={overrideReason} setOverrideReason={setOverrideReason} /> : <p className="mt-3 text-sm text-slate-500">Select an assignment to inspect details.</p>}
+          {selectedAssignment ? <AssignmentDrawer assignment={selectedAssignment} people={people} resizeAssignment={resizeAssignment} splitAssignment={splitAssignment} approveSelectedOverride={approveSelectedOverride} overrideReason={overrideReason} setOverrideReason={setOverrideReason} onOpenPerson={onOpenPerson} /> : <p className="mt-3 text-sm text-slate-500">Select an assignment to inspect details.</p>}
         </section>
         {conflict && (
           <section className="rounded-2xl border-2 border-red-300 bg-red-50 p-5 shadow-sm">
             <h3 className="flex items-center gap-2 font-bold text-red-900"><AlertTriangle size={18} /> Conflict workflow</h3>
             <p className="mt-2 text-sm text-red-800">
-              {conflict.person.name} would reach {pct(conflict.resultingPct)} on {formatDate(conflict.date)} against {pct(conflict.availablePct)} available capacity.
+              <PersonNameLink person={conflict.person} onOpenPerson={onOpenPerson} className="text-sm text-red-900 decoration-red-300" /> would reach {pct(conflict.resultingPct)} on {formatDate(conflict.date)} against {pct(conflict.availablePct)} available capacity.
             </p>
             <div className="mt-3 space-y-2">
               <input value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} className="w-full rounded-lg border border-red-200 px-3 py-2 text-sm" />
@@ -942,7 +1179,7 @@ function Schedule({
           <div className="mt-3 space-y-3">
             {selectedMatches.slice(0, 3).map((match) => (
               <button key={match.person.id} onClick={() => createAssignmentFromDemand(selectedDemand, match.person, selectedDemand.start, "confirmed")} className="w-full rounded-xl border border-slate-200 p-3 text-left hover:border-blue-300">
-                <div className="flex items-center justify-between"><span className="font-bold text-slate-950">{match.person.name}</span><span className="text-sm font-bold text-blue-700">{match.score}</span></div>
+                <div className="flex items-center justify-between"><PersonNameLink person={match.person} onOpenPerson={onOpenPerson} /><span className="text-sm font-bold text-blue-700">{match.score}</span></div>
                 <div className="mt-1 text-xs text-slate-500">{match.explanation.join(" · ")}</div>
               </button>
             ))}
@@ -961,6 +1198,7 @@ function AssignmentDrawer({
   approveSelectedOverride,
   overrideReason,
   setOverrideReason,
+  onOpenPerson,
 }: {
   assignment: ResourceAssignment;
   people: ResourcePerson[];
@@ -969,6 +1207,7 @@ function AssignmentDrawer({
   approveSelectedOverride: () => void;
   overrideReason: string;
   setOverrideReason: (value: string) => void;
+  onOpenPerson: (personId: string) => void;
 }) {
   const person = people.find((item) => item.id === assignment.personId);
   const project = assignmentProject(assignment);
@@ -977,7 +1216,7 @@ function AssignmentDrawer({
       <div>
         <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{project.client} / {project.code}</div>
         <div className="text-lg font-bold text-slate-950">{assignment.role}</div>
-        <div className="text-sm text-slate-500">{person?.name ?? "Unfilled"} · {assignment.start} to {assignment.end}</div>
+        <div className="text-sm text-slate-500">{person ? <PersonNameLink person={person} onOpenPerson={onOpenPerson} className="text-sm" /> : "Unfilled"} · {assignment.start} to {assignment.end}</div>
       </div>
       <div className="grid grid-cols-2 gap-2 text-sm">
         <DrawerField label="Allocation" value={pct(assignment.allocationPct)} />
@@ -1021,12 +1260,14 @@ function DemandPanel({
   setSelectedDemandId,
   selectedMatches,
   createAssignmentFromDemand,
+  onOpenPerson,
 }: {
   assignments: ResourceAssignment[];
   selectedDemandId: string;
   setSelectedDemandId: (id: string) => void;
   selectedMatches: MatchResult[];
   createAssignmentFromDemand: (demand: ResourceDemand, person: ResourcePerson, date: string, mode: "confirmed" | "tentative" | "waiting" | "override") => void;
+  onOpenPerson: (personId: string) => void;
 }) {
   const selectedDemand = resourceDemands.find((item) => item.id === selectedDemandId) ?? resourceDemands[0];
   const demandLoad = resourceDemands.reduce((total, demand) => total + demand.allocationPct * demand.confidence / 100, 0);
@@ -1054,7 +1295,7 @@ function DemandPanel({
             <div key={match.person.id} className="rounded-2xl border border-slate-200 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="font-bold text-slate-950">{match.person.name}</h3>
+                  <h3><PersonNameLink person={match.person} onOpenPerson={onOpenPerson} /></h3>
                   <p className="text-sm text-slate-500">{match.person.role} · {match.person.pillar}</p>
                 </div>
                 <div className="rounded-xl bg-blue-50 px-3 py-2 text-center"><div className="text-lg font-bold text-blue-700">{match.score}</div><div className="text-[10px] font-bold uppercase text-blue-500">match</div></div>
@@ -1077,7 +1318,7 @@ function DemandPanel({
   );
 }
 
-function PeopleDirectory({ people, assignments, financeVisible, draft, setDraft, addTeamMember }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; financeVisible: boolean; draft: NewMemberDraft; setDraft: (draft: NewMemberDraft) => void; addTeamMember: () => void }) {
+function PeopleDirectory({ people, assignments, financeVisible, draft, setDraft, addTeamMember, onOpenPerson }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; financeVisible: boolean; draft: NewMemberDraft; setDraft: (draft: NewMemberDraft) => void; addTeamMember: () => void; onOpenPerson: (personId: string) => void }) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-200 px-5 py-4">
@@ -1127,7 +1368,7 @@ function PeopleDirectory({ people, assignments, financeVisible, draft, setDraft,
               const currentLoad = getBookedPct(assignments, person.id, TODAY, false);
               return (
                 <tr key={person.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-3"><div className="font-bold text-slate-950">{person.name}</div><div className="text-xs text-slate-500">{person.employeeNo} · {person.role}</div></td>
+                  <td className="px-4 py-3"><div><PersonNameLink person={person} onOpenPerson={onOpenPerson} /></div><div className="text-xs text-slate-500">{person.employeeNo} · {person.role}</div></td>
                   <td className="px-4 py-3">{person.pillar}</td>
                   <td className="px-4 py-3">{person.manager}</td>
                   <td className="px-4 py-3">{person.location}</td>
@@ -1158,7 +1399,7 @@ function MemberInput({ label, value, onChange, placeholder, className = "" }: { 
   );
 }
 
-function BenchView({ people, assignments }: { people: ResourcePerson[]; assignments: ResourceAssignment[] }) {
+function BenchView({ people, assignments, onOpenPerson }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; onOpenPerson: (personId: string) => void }) {
   const days = businessDays(TODAY, 10);
   const rows = people.map((person) => {
     const remaining = days.map((day) => getAvailablePct(assignments, person.id, day) - getBookedPct(assignments, person.id, day, false));
@@ -1173,7 +1414,7 @@ function BenchView({ people, assignments }: { people: ResourcePerson[]; assignme
       <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {rows.map(({ person, avg, ending }) => (
           <div key={person.id} className={`rounded-2xl border p-4 ${avg >= 50 ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}>
-            <div className="flex items-center justify-between"><h3 className="font-bold text-slate-950">{person.name}</h3><span className="text-lg font-bold text-slate-900">{pct(avg)}</span></div>
+            <div className="flex items-center justify-between"><h3><PersonNameLink person={person} onOpenPerson={onOpenPerson} /></h3><span className="text-lg font-bold text-slate-900">{pct(avg)}</span></div>
             <div className="mt-1 text-sm text-slate-500">avg remaining next 10 business days</div>
             <div className="mt-3 flex flex-wrap gap-1">{person.tags.map((item) => <span key={item} className="rounded bg-white px-2 py-0.5 text-xs font-semibold text-slate-600">{item}</span>)}</div>
             {ending && <div className="mt-3 rounded-lg bg-blue-50 p-2 text-xs font-semibold text-blue-700">Ending soon: {assignmentProject(ending).client} on {formatDate(ending.end)}</div>}
@@ -1253,6 +1494,7 @@ function ApprovalsAudit({
   setComment,
   addComment,
   approveSelectedOverride,
+  onOpenPerson,
 }: {
   assignments: ResourceAssignment[];
   people: ResourcePerson[];
@@ -1262,6 +1504,7 @@ function ApprovalsAudit({
   setComment: (value: string) => void;
   addComment: () => void;
   approveSelectedOverride: () => void;
+  onOpenPerson: (personId: string) => void;
 }) {
   const approvals = assignments.filter((assignment) => {
     if (!assignment.personId || assignment.type === "Leave") return false;
@@ -1277,7 +1520,7 @@ function ApprovalsAudit({
             const person = people.find((item) => item.id === assignment.personId);
             return (
               <div key={assignment.id} className="rounded-xl border border-red-200 bg-red-50 p-4">
-                <div className="font-bold text-red-950">{person?.name} · {assignment.role}</div>
+                <div className="font-bold text-red-950">{person ? <PersonNameLink person={person} onOpenPerson={onOpenPerson} className="text-red-950 decoration-red-300" /> : "Unfilled"} · {assignment.role}</div>
                 <div className="mt-1 text-sm text-red-800">{assignment.status} · {pct(assignment.allocationPct)} · {formatDate(assignment.start)} to {formatDate(assignment.end)}</div>
                 {selectedAssignment?.id === assignment.id && <button onClick={approveSelectedOverride} className="mt-3 rounded-lg bg-red-700 px-3 py-2 text-sm font-semibold text-white">Approve selected exception</button>}
               </div>
