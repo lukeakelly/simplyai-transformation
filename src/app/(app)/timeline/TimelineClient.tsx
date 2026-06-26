@@ -59,6 +59,7 @@ type Props = {
   tasks: TaskWithRelations[];
   horizons: HorizonRecord[];
   people: PersonRecord[];
+  canEdit: boolean;
 };
 
 function toCard(t: TaskWithRelations): Card {
@@ -82,7 +83,7 @@ function fmtDate(d: Date | string | null): string {
   });
 }
 
-export function TimelineClient({ tasks, horizons }: Props) {
+export function TimelineClient({ tasks, horizons, canEdit }: Props) {
   const [customise, setCustomise] = useState(false);
 
   // Column order: horizons (by order) then Unscheduled.
@@ -123,25 +124,28 @@ export function TimelineClient({ tasks, horizons }: Props) {
             {horizons.length} phases.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setCustomise((v) => !v)}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold border ${
-              customise
-                ? "bg-blue-600 text-white border-blue-600"
-                : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
-            }`}
-          >
-            <Settings2 size={16} /> Customise phases
-          </button>
-        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCustomise((v) => !v)}
+              className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold border ${
+                customise
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+              }`}
+            >
+              <Settings2 size={16} /> Customise phases
+            </button>
+          </div>
+        )}
       </header>
 
       <Board
         key={signature}
         initial={buildState}
         horizons={horizons}
-        customise={customise}
+        customise={canEdit && customise}
+        canEdit={canEdit}
       />
     </div>
   );
@@ -151,10 +155,12 @@ function Board({
   initial,
   horizons,
   customise,
+  canEdit,
 }: {
   initial: Record<string, Card[]>;
   horizons: HorizonRecord[];
   customise: boolean;
+  canEdit: boolean;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -175,12 +181,14 @@ function Board({
   }
 
   function handleDragStart(e: DragStartEvent) {
+    if (!canEdit) return;
     const id = String(e.active.id);
     setActiveId(id);
     sourceContainer.current = findContainer(id) ?? null;
   }
 
   function handleDragOver(e: DragOverEvent) {
+    if (!canEdit) return;
     const { active, over } = e;
     if (!over) return;
     const activeC = findContainer(String(active.id));
@@ -210,6 +218,7 @@ function Board({
   }
 
   function handleDragEnd(e: DragEndEvent) {
+    if (!canEdit) return;
     const { active, over } = e;
     setActiveId(null);
     if (!over) {
@@ -284,6 +293,7 @@ function Board({
               <Column
                 key={h.id}
                 id={h.id}
+                canEdit={canEdit}
                 title={h.name}
                 color={h.color}
                 subtitle={
@@ -305,6 +315,7 @@ function Board({
             ))}
             <Column
               id={UNSCHEDULED}
+              canEdit={canEdit}
               title="Unscheduled"
               color="#94a3b8"
               cards={items[UNSCHEDULED] ?? []}
@@ -329,6 +340,7 @@ function Board({
 
 function Column({
   id,
+  canEdit,
   title,
   subtitle,
   color,
@@ -342,6 +354,7 @@ function Column({
   onRefresh,
 }: {
   id: string;
+  canEdit: boolean;
   title: string;
   subtitle?: string;
   color: string;
@@ -402,12 +415,12 @@ function Column({
           strategy={verticalListSortingStrategy}
         >
           {cards.map((card) => (
-            <SortableCard key={card.id} card={card} />
+            <SortableCard key={card.id} card={card} canEdit={canEdit} />
           ))}
         </SortableContext>
         {cards.length === 0 && (
           <div className="text-xs text-slate-400 text-center py-6">
-            Drop tasks here
+            {canEdit ? "Drop tasks here" : "No tasks"}
           </div>
         )}
       </div>
@@ -415,9 +428,9 @@ function Column({
   );
 }
 
-function SortableCard({ card }: { card: Card }) {
+function SortableCard({ card, canEdit }: { card: Card; canEdit: boolean }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: card.id });
+    useSortable({ id: card.id, disabled: !canEdit });
   return (
     <div
       ref={setNodeRef}
@@ -429,17 +442,25 @@ function SortableCard({ card }: { card: Card }) {
       {...attributes}
       {...listeners}
     >
-      <CardView card={card} />
+      <CardView card={card} draggable={canEdit} />
     </div>
   );
 }
 
-function CardView({ card, dragging }: { card: Card; dragging?: boolean }) {
+function CardView({
+  card,
+  dragging,
+  draggable = true,
+}: {
+  card: Card;
+  dragging?: boolean;
+  draggable?: boolean;
+}) {
   return (
     <div
-      className={`bg-white rounded-lg border border-slate-200 p-3 cursor-grab active:cursor-grabbing shadow-sm ${
-        dragging ? "shadow-lg rotate-1" : ""
-      }`}
+      className={`bg-white rounded-lg border border-slate-200 p-3 shadow-sm ${
+        draggable ? "cursor-grab active:cursor-grabbing" : ""
+      } ${dragging ? "shadow-lg rotate-1" : ""}`}
     >
       <div className="text-sm font-medium text-slate-900 leading-snug">
         {card.title}

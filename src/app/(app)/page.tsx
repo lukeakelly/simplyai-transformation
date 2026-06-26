@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getDashboardStats, getHorizons } from "@/lib/data";
 import { STATUS_COLORS, PRIORITY_COLORS } from "@/lib/constants";
 import {
@@ -7,6 +8,9 @@ import {
   AlertTriangle,
   Target,
   ListChecks,
+  Sparkles,
+  Zap,
+  ChevronRight,
 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +37,63 @@ function StatCard({
       <div className="mt-2 text-3xl font-bold text-slate-900">{value}</div>
       {sub && <div className="mt-1 text-xs text-slate-400">{sub}</div>}
     </div>
+  );
+}
+
+function FilterTile({
+  label,
+  value,
+  pct,
+  sub,
+  href,
+  icon: Icon,
+  iconClass,
+  ring,
+  barClass,
+}: {
+  label: string;
+  value: string | number;
+  pct: number;
+  sub: string;
+  href: string;
+  icon: React.ComponentType<{ size?: number; className?: string }>;
+  iconClass: string;
+  ring: string;
+  barClass: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className={`group flex items-center justify-between gap-4 rounded-xl border bg-white p-5 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 ${ring}`}
+    >
+      <div className="flex items-center gap-4 min-w-0">
+        <span
+          className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${iconClass}`}
+        >
+          <Icon size={20} />
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-slate-700">{label}</div>
+          <div className="mt-0.5 flex items-baseline gap-2">
+            <span className="text-3xl font-bold text-slate-900">{value}</span>
+            <span className="text-sm font-semibold text-slate-500">
+              {pct}% complete
+            </span>
+          </div>
+          <div className="mt-1.5 h-1.5 w-40 max-w-full rounded-full bg-slate-100 overflow-hidden">
+            <div
+              className={`h-full rounded-full ${barClass}`}
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div className="mt-1 text-xs text-slate-400">{sub}</div>
+        </div>
+      </div>
+      <span className="flex items-center gap-1 text-xs font-medium text-slate-400 group-hover:text-slate-600">
+        View
+        <ChevronRight size={16} />
+      </span>
+    </Link>
   );
 }
 
@@ -139,6 +200,32 @@ export default async function DashboardPage() {
             value={stats.atRisk}
             icon={AlertTriangle}
             accent="text-orange-500"
+          />
+        </div>
+
+        {/* Focused, clickable views */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <FilterTile
+            label="Dora items"
+            value={stats.doraTotal}
+            pct={stats.doraCompletion}
+            sub={`${stats.doraDone} done \u00b7 from Project Dora`}
+            href="/tasks?origin=Dora"
+            icon={Sparkles}
+            iconClass="bg-purple-100 text-purple-600"
+            ring="border-purple-200"
+            barClass="bg-purple-500"
+          />
+          <FilterTile
+            label="Critical path"
+            value={stats.criticalTotal}
+            pct={stats.criticalCompletion}
+            sub={`${stats.criticalDone} of ${stats.criticalTotal} done \u00b7 highest priority`}
+            href="/tasks?priority=Critical+Path"
+            icon={Zap}
+            iconClass="bg-red-100 text-red-600"
+            ring="border-red-200"
+            barClass="bg-red-500"
           />
         </div>
 

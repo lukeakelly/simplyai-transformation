@@ -8,6 +8,32 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  name         String   @default("")
+  passwordHash String
+  role         String
+  permission   String   @default("editor")
+  isAdmin      Boolean  @default(false)
+  comments     Comment[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorRole  String
+  action     String
+  entityType String
+  entityId   String?
+  entityName String?
+  summary    String
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 model Horizon {
   id        String   @id @default(cuid())
   name      String
@@ -60,12 +86,138 @@ model Task {
   evidence        String?
   doneCriteria    String?
   source          String?
+  origin          String    @default("Transformation Plan (only)")
   notes           String?
   position        Int       @default(0)
+  comments        Comment[]
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   @@index([horizonId])
   @@index([workstream])
   @@index([status])
+  @@index([origin])
+}
+
+model Comment {
+  id         String   @id @default(cuid())
+  taskId     String
+  task       Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  authorName String
+  body       String
+  createdAt  DateTime @default(now())
+
+  @@index([taskId])
+}
+
+model ResourcePlannedAllocation {
+  id                    String   @id @default(cuid())
+  canonicalAllocationId String   @unique
+  canonicalPersonId     String?
+  canonicalProjectId    String
+  canonicalRequestId    String?
+  status                String
+  allocationType        String
+  role                  String
+  startDate             DateTime
+  endDate               DateTime
+  allocationPct         Int
+  confidencePct         Int
+  payload               Json
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([canonicalPersonId])
+  @@index([canonicalProjectId])
+  @@index([status])
+}
+
+model ResourceAllocationHistory {
+  id                    String   @id @default(cuid())
+  canonicalAllocationId String
+  canonicalPersonId     String?
+  canonicalProjectId    String
+  action                String
+  actor                 String
+  summary               String
+  beforePayload         Json
+  afterPayload          Json
+  createdAt             DateTime @default(now())
+
+  @@index([canonicalAllocationId])
+  @@index([canonicalPersonId])
+  @@index([canonicalProjectId])
+  @@index([createdAt])
+}
+
+model ResourceComment {
+  id          String   @id @default(cuid())
+  targetType  String
+  targetId    String
+  body        String
+  authorId    String?
+  authorName  String
+  authorRole  String
+  createdAt   DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
+model ResourceSyncRun {
+  id                 String   @id @default(cuid())
+  refreshRunId       String   @unique
+  datasetName        String
+  sourceSystem       String
+  status             String
+  dataQualityStatus  String
+  recordsRead        Int
+  recordsAccepted    Int
+  recordsRejected    Int
+  lastSuccessfulAt   DateTime?
+  mlvizzPublishedAt  DateTime?
+  failureSummary     String?
+  rawPayload         Json
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([datasetName])
+  @@index([sourceSystem])
+  @@index([status])
+}
+
+model ResourceFailedRecord {
+  id              String   @id @default(cuid())
+  failedRecordId  String   @unique
+  refreshRunId    String
+  datasetName     String
+  sourceSystem    String
+  sourceRecordId  String
+  failureReason   String
+  reprocessStatus String
+  rawPayload      Json
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([refreshRunId])
+  @@index([datasetName])
+  @@index([reprocessStatus])
+}
+
+model ResourceOutboundEvent {
+  id            String    @id @default(cuid())
+  eventType     String
+  sourceRecordId String
+  status        String    @default("pending")
+  correlationId String
+  payload       Json
+  publishedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([eventType])
+  @@index([status])
+  @@index([correlationId])
 }

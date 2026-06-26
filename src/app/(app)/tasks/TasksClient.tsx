@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Search, Check } from "lucide-react";
-import { StatusBadge, PriorityBadge, Pill } from "@/components/Badges";
+import { StatusBadge, PriorityBadge, Pill, OriginBadge } from "@/components/Badges";
 import { TaskDrawer } from "@/components/TaskDrawer";
 import { STATUSES, PRIORITIES, DONE_STATUSES } from "@/lib/constants";
 import {
@@ -22,21 +22,35 @@ type Props = {
   horizons: HorizonRecord[];
   people: PersonRecord[];
   workstreams: string[];
+  canEdit: boolean;
+  currentUserName: string;
+  initialPriority?: string;
+  initialOrigin?: string;
 };
 
 const selectCls =
   "rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-700 focus:border-blue-500 focus:outline-none";
 
-export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
+export function TasksClient({
+  tasks,
+  horizons,
+  people,
+  workstreams,
+  canEdit,
+  currentUserName,
+  initialPriority = "",
+  initialOrigin = "",
+}: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
 
   const [search, setSearch] = useState("");
   const [fWorkstream, setFWorkstream] = useState("");
   const [fStatus, setFStatus] = useState("");
-  const [fPriority, setFPriority] = useState("");
+  const [fPriority, setFPriority] = useState(initialPriority);
   const [fHorizon, setFHorizon] = useState("");
   const [fOwner, setFOwner] = useState("");
+  const [fOrigin, setFOrigin] = useState(initialOrigin);
   const [hideDone, setHideDone] = useState(false);
 
   const [selected, setSelected] = useState<TaskWithRelations | null>(null);
@@ -57,6 +71,7 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
       if (fPriority && t.priority !== fPriority) return false;
       if (fHorizon && (t.horizonId ?? "") !== fHorizon) return false;
       if (fOwner && (t.ownerId ?? "") !== fOwner) return false;
+      if (fOrigin && t.origin !== fOrigin) return false;
       if (hideDone && DONE_STATUSES.has(t.status)) return false;
       return true;
     });
@@ -68,6 +83,7 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
     fPriority,
     fHorizon,
     fOwner,
+    fOrigin,
     hideDone,
   ]);
 
@@ -105,12 +121,14 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
             {filtered.length} of {tasks.length} items
           </p>
         </div>
-        <button
-          onClick={openNew}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
-        >
-          <Plus size={16} /> New task
-        </button>
+        {canEdit && (
+          <button
+            onClick={openNew}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+          >
+            <Plus size={16} /> New task
+          </button>
+        )}
       </header>
 
       {/* Filters */}
@@ -187,6 +205,18 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
             </option>
           ))}
         </select>
+        <select
+          className={selectCls}
+          value={fOrigin}
+          onChange={(e) => setFOrigin(e.target.value)}
+          title="Filter by source"
+        >
+          <option value="">Dora + Transformation</option>
+          <option value="Dora">Dora only</option>
+          <option value="Transformation Plan (only)">
+            Transformation Plan (only)
+          </option>
+        </select>
         <label className="flex items-center gap-1.5 text-sm text-slate-600 ml-1">
           <input
             type="checkbox"
@@ -229,7 +259,9 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
                     >
                       <button
                         aria-label="Toggle done"
+                        disabled={!canEdit}
                         onClick={() =>
+                          canEdit &&
                           startTransition(async () => {
                             await toggleTaskDone(t.id, !done);
                             refresh();
@@ -239,7 +271,7 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
                           done
                             ? "bg-emerald-500 border-emerald-500 text-white"
                             : "border-slate-300 hover:border-emerald-400"
-                        }`}
+                        } ${canEdit ? "" : "cursor-default opacity-80"}`}
                       >
                         {done && <Check size={14} />}
                       </button>
@@ -257,45 +289,66 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
                       >
                         {t.title}
                       </div>
-                      <div className="text-xs text-slate-400 mt-0.5">
-                        {t.workstream}
-                        {t.category ? ` \u00b7 ${t.category}` : ""}
+                      <div className="flex items-center gap-2 mt-1">
+                        {t.origin === "Dora" && <OriginBadge origin={t.origin} />}
+                        <span className="text-xs text-slate-400">
+                          {t.workstream}
+                          {t.category ? ` \u00b7 ${t.category}` : ""}
+                        </span>
+                        {t.comments.length > 0 && (
+                          <span className="text-xs text-slate-400">
+                            {"\u00b7"} {t.comments.length} comment
+                            {t.comments.length === 1 ? "" : "s"}
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
-                      <select
-                        className="rounded-md border border-transparent hover:border-slate-300 bg-transparent px-1 py-1 text-sm text-slate-700 focus:border-blue-500 focus:outline-none max-w-[150px]"
-                        value={t.ownerId ?? ""}
-                        onChange={(e) =>
-                          startTransition(async () => {
-                            await updateTask(t.id, {
-                              ownerId: e.target.value || null,
-                            });
-                            refresh();
-                          })
-                        }
-                      >
-                        <option value="">Unassigned</option>
-                        {people.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name}
-                          </option>
-                        ))}
-                      </select>
+                      {canEdit ? (
+                        <select
+                          className="rounded-md border border-transparent hover:border-slate-300 bg-transparent px-1 py-1 text-sm text-slate-700 focus:border-blue-500 focus:outline-none max-w-[150px]"
+                          value={t.ownerId ?? ""}
+                          onChange={(e) =>
+                            startTransition(async () => {
+                              await updateTask(t.id, {
+                                ownerId: e.target.value || null,
+                              });
+                              refresh();
+                            })
+                          }
+                        >
+                          <option value="">Unassigned</option>
+                          {people.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="text-sm text-slate-700">
+                          {t.owner?.name ?? (
+                            <span className="text-slate-400">Unassigned</span>
+                          )}
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-3">
                       <PriorityBadge priority={t.priority} />
                     </td>
                     <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
-                      <StatusSelect
-                        value={t.status}
-                        onChange={(s) =>
-                          startTransition(async () => {
-                            await setTaskStatus(t.id, s);
-                            refresh();
-                          })
-                        }
-                      />
+                      {canEdit ? (
+                        <StatusSelect
+                          value={t.status}
+                          onChange={(s) =>
+                            startTransition(async () => {
+                              await setTaskStatus(t.id, s);
+                              refresh();
+                            })
+                          }
+                        />
+                      ) : (
+                        <StatusBadge status={t.status} />
+                      )}
                     </td>
                     <td className="px-3 py-3">
                       {t.horizonId ? (
@@ -344,6 +397,8 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
           key={selected?.id ?? "new"}
           task={selected}
           isNew={drawerNew}
+          canEdit={canEdit}
+          currentUserName={currentUserName}
           horizons={horizons}
           people={people}
           workstreams={workstreams}
@@ -352,6 +407,7 @@ export function TasksClient({ tasks, horizons, people, workstreams }: Props) {
             closeDrawer();
             refresh();
           }}
+          onCommented={refresh}
         />
       )}
     </div>

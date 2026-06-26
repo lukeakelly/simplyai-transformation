@@ -3,6 +3,8 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
+import { requireEditor, getSession } from "@/lib/auth";
+import { logAudit } from "@/lib/audit";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -42,14 +44,16 @@ export type TaskInput = {
   evidence?: string | null;
   doneCriteria?: string | null;
   source?: string | null;
+  origin?: string | null;
   notes?: string | null;
 };
 
 export async function createTask(input: TaskInput) {
+  const session = await requireEditor();
   const count = await prisma.task.count({
     where: { horizonId: input.horizonId ?? null },
   });
-  await prisma.task.create({
+  const created = await prisma.task.create({
     data: {
       title: input.title.trim() || "Untitled task",
       workstream: input.workstream || "Unassigned",
@@ -73,14 +77,24 @@ export async function createTask(input: TaskInput) {
       evidence: input.evidence ?? null,
       doneCriteria: input.doneCriteria ?? null,
       source: input.source ?? null,
+      origin: input.origin || "Transformation Plan (only)",
       notes: input.notes ?? null,
       position: count,
     },
+  });
+  await logAudit({
+    actorRole: session.role,
+    action: "created",
+    entityType: "task",
+    entityId: created.id,
+    entityName: created.title,
+    summary: `Created task "${created.title}"`,
   });
   revalidateAll();
 }
 
 export async function updateTask(id: string, input: Partial<TaskInput>) {
+  const session = await requireEditor();
   const data: Record<string, unknown> = {};
   const keys: (keyof TaskInput)[] = [
     "title",
@@ -103,9 +117,15 @@ export async function updateTask(id: string, input: Partial<TaskInput>) {
     "evidence",
     "doneCriteria",
     "source",
+    "origin",
     "notes",
   ];
-  const required = new Set<keyof TaskInput>(["title", "workstream", "status"]);
+  const required = new Set<keyof TaskInput>([
+    "title",
+    "workstream",
+    "status",
+    "origin",
+  ]);
   for (const k of keys) {
     if (k in input) {
       const v = input[k];
@@ -123,28 +143,105 @@ export async function updateTask(id: string, input: Partial<TaskInput>) {
   if ("targetDate" in input) {
     data.targetDate = input.targetDate ? new Date(input.targetDate) : null;
   }
-  await prisma.task.update({ where: { id }, data });
+  const updated = await prisma.task.update({ where: { id }, data });
+  await logAudit({
+    actorRole: session.role,
+    action: "updated",
+    entityType: "task",
+    entityId: updated.id,
+    entityName: updated.title,
+    summary: `Updated task "${updated.title}" (${Object.keys(data).join(", ") || "no fields"})`,
+  });
   revalidateAll();
 }
 
 export async function toggleTaskDone(id: string, done: boolean) {
-  await prisma.task.update({
+  const session = await requireEditor();
+  const updated = await prisma.task.update({
     where: { id },
     data: done
       ? { status: "Embedded", completion: 100 }
       : { status: "In Progress", completion: 50 },
   });
+  await logAudit({
+    actorRole: session.role,
+    action: done ? "checked" : "unchecked",
+    entityType: "task",
+    entityId: updated.id,
+    entityName: updated.title,
+    summary: `${done ? "Completed" : "Reopened"} task "${updated.title}"`,
+  });
   revalidateAll();
 }
 
 export async function setTaskStatus(id: string, status: string) {
-  await prisma.task.update({ where: { id }, data: { status } });
+  const session = await requireEditor();
+  const updated = await prisma.task.update({
+    where: { id },
+    data: { status },
+  });
+  await logAudit({
+    actorRole: session.role,
+    action: "status",
+    entityType: "task",
+    entityId: updated.id,
+    entityName: updated.title,
+    summary: `Set "${updated.title}" status to ${status}`,
+  });
   revalidateAll();
 }
 
 export async function deleteTask(id: string) {
-  await prisma.task.delete({ where: { id } });
+  const session = await requireEditor();
+  const deleted = await prisma.task.delete({ where: { id } });
+  await logAudit({
+    actorRole: session.role,
+    action: "deleted",
+    entityType: "task",
+    entityId: deleted.id,
+    entityName: deleted.title,
+    summary: `Deleted task "${deleted.title}"`,
+  });
   revalidateAll();
+}
+
+/**
+ * Add a comment to a task. Available to every authenticated user, including
+ * read-only reviewers — this is the one mutation a Viewer is allowed to make.
+ * The comment is attributed to the logged-in user's account, so it is always
+ * traceable back to a real, unique person.
+ */
+export async function addComment(
+  taskId: string,
+  body: string,
+): Promise<ActionResult> {
+  const session = await getSession();
+  if (!session) return { ok: false, error: "Not authenticated." };
+
+  const text = body.trim();
+  if (!text) return { ok: false, error: "Please enter a comment." };
+
+  const author = session.name?.trim() || session.username;
+
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    select: { id: true, title: true },
+  });
+  if (!task) return { ok: false, error: "Task not found." };
+
+  await prisma.comment.create({
+    data: { taskId, userId: session.userId, authorName: author, body: text },
+  });
+  await logAudit({
+    actorRole: session.role,
+    action: "commented",
+    entityType: "task",
+    entityId: task.id,
+    entityName: task.title,
+    summary: `${author} (${session.role}) commented on "${task.title}"`,
+  });
+  revalidateAll();
+  return { ok: true };
 }
 
 export async function moveTaskToHorizon(
@@ -152,9 +249,18 @@ export async function moveTaskToHorizon(
   horizonId: string | null,
   newPosition: number,
 ) {
-  await prisma.task.update({
+  const session = await requireEditor();
+  const updated = await prisma.task.update({
     where: { id: taskId },
     data: { horizonId, position: newPosition },
+  });
+  await logAudit({
+    actorRole: session.role,
+    action: "moved",
+    entityType: "task",
+    entityId: updated.id,
+    entityName: updated.title,
+    summary: `Moved task "${updated.title}" on the timeline`,
   });
   revalidateAll();
 }
@@ -163,6 +269,7 @@ export async function reorderTasksInHorizon(
   horizonId: string | null,
   orderedIds: string[],
 ) {
+  const session = await requireEditor();
   await prisma.$transaction(
     orderedIds.map((id, index) =>
       prisma.task.update({
@@ -171,6 +278,12 @@ export async function reorderTasksInHorizon(
       }),
     ),
   );
+  await logAudit({
+    actorRole: session.role,
+    action: "reordered",
+    entityType: "timeline",
+    summary: `Reordered ${orderedIds.length} task(s) on the timeline`,
+  });
   revalidateAll();
 }
 
@@ -182,8 +295,9 @@ export async function createHorizon(input: {
   startDate?: string | null;
   endDate?: string | null;
 }) {
+  const session = await requireEditor();
   const max = await prisma.horizon.aggregate({ _max: { order: true } });
-  await prisma.horizon.create({
+  const created = await prisma.horizon.create({
     data: {
       name: input.name.trim() || "New phase",
       color: input.color ?? "#2563eb",
@@ -191,6 +305,14 @@ export async function createHorizon(input: {
       startDate: input.startDate ? new Date(input.startDate) : null,
       endDate: input.endDate ? new Date(input.endDate) : null,
     },
+  });
+  await logAudit({
+    actorRole: session.role,
+    action: "created",
+    entityType: "horizon",
+    entityId: created.id,
+    entityName: created.name,
+    summary: `Added timeline phase "${created.name}"`,
   });
   revalidateAll();
 }
@@ -211,25 +333,50 @@ export async function updateHorizon(
     data.startDate = input.startDate ? new Date(input.startDate) : null;
   if ("endDate" in input)
     data.endDate = input.endDate ? new Date(input.endDate) : null;
-  await prisma.horizon.update({ where: { id }, data });
+  const session = await requireEditor();
+  const updated = await prisma.horizon.update({ where: { id }, data });
+  await logAudit({
+    actorRole: session.role,
+    action: "updated",
+    entityType: "horizon",
+    entityId: updated.id,
+    entityName: updated.name,
+    summary: `Updated timeline phase "${updated.name}"`,
+  });
   revalidateAll();
 }
 
 export async function deleteHorizon(id: string) {
+  const session = await requireEditor();
   await prisma.task.updateMany({
     where: { horizonId: id },
     data: { horizonId: null },
   });
-  await prisma.horizon.delete({ where: { id } });
+  const deleted = await prisma.horizon.delete({ where: { id } });
+  await logAudit({
+    actorRole: session.role,
+    action: "deleted",
+    entityType: "horizon",
+    entityId: deleted.id,
+    entityName: deleted.name,
+    summary: `Deleted timeline phase "${deleted.name}"`,
+  });
   revalidateAll();
 }
 
 export async function reorderHorizons(orderedIds: string[]) {
+  const session = await requireEditor();
   await prisma.$transaction(
     orderedIds.map((id, index) =>
       prisma.horizon.update({ where: { id }, data: { order: index } }),
     ),
   );
+  await logAudit({
+    actorRole: session.role,
+    action: "reordered",
+    entityType: "timeline",
+    summary: `Reordered timeline phases`,
+  });
   revalidateAll();
 }
 
@@ -240,15 +387,24 @@ export async function createPerson(input: {
   title?: string | null;
   email?: string | null;
 }): Promise<ActionResult> {
+  const session = await requireEditor();
   const name = input.name.trim();
   if (!name) return { ok: false, error: "Name is required." };
   try {
-    await prisma.person.create({
+    const created = await prisma.person.create({
       data: {
         name,
         title: input.title ?? null,
         email: input.email ?? null,
       },
+    });
+    await logAudit({
+      actorRole: session.role,
+      action: "created",
+      entityType: "owner",
+      entityId: created.id,
+      entityName: created.name,
+      summary: `Added owner "${created.name}"`,
     });
   } catch (e) {
     if (isUniqueViolation(e)) {
@@ -273,8 +429,17 @@ export async function updatePerson(
   }
   if ("title" in input) data.title = input.title ?? null;
   if ("email" in input) data.email = input.email ?? null;
+  const session = await requireEditor();
   try {
-    await prisma.person.update({ where: { id }, data });
+    const updated = await prisma.person.update({ where: { id }, data });
+    await logAudit({
+      actorRole: session.role,
+      action: "updated",
+      entityType: "owner",
+      entityId: updated.id,
+      entityName: updated.name,
+      summary: `Updated owner "${updated.name}"`,
+    });
   } catch (e) {
     if (isUniqueViolation(e)) {
       return {
@@ -289,6 +454,7 @@ export async function updatePerson(
 }
 
 export async function deletePerson(id: string) {
+  const session = await requireEditor();
   await prisma.task.updateMany({
     where: { ownerId: id },
     data: { ownerId: null },
@@ -297,7 +463,15 @@ export async function deletePerson(id: string) {
     where: { accountableId: id },
     data: { accountableId: null },
   });
-  await prisma.person.delete({ where: { id } });
+  const deleted = await prisma.person.delete({ where: { id } });
+  await logAudit({
+    actorRole: session.role,
+    action: "deleted",
+    entityType: "owner",
+    entityId: deleted.id,
+    entityName: deleted.name,
+    summary: `Removed owner "${deleted.name}"`,
+  });
   revalidateAll();
 }
 

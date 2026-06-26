@@ -8,7 +8,14 @@
     "start": "next start",
     "lint": "eslint",
     "postinstall": "prisma generate",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "db:seed-users": "tsx prisma/seed-users.ts",
+    "db:add-dora-tasks": "tsx prisma/add-dora-tasks.ts",
+    "db:rotate-passwords": "tsx prisma/rotate-passwords.ts",
+    "mlvizz:generate-fixtures": "tsx scripts/generate-mlvizz-fixtures.ts",
+    "test:mlvizz": "tsx scripts/test-mlvizz-contract.ts",
+    "db:seed-mlvizz": "tsx scripts/seed-mlvizz.ts",
+    "db:reset-demo-data": "tsx scripts/reset-demo-data.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { X, Trash2, Save } from "lucide-react";
+import { X, Trash2, Save, MessageSquarePlus } from "lucide-react";
 import {
   STATUSES,
   PRIORITIES,
@@ -12,8 +12,10 @@ import {
   createTask,
   updateTask,
   deleteTask,
+  addComment,
   type TaskInput,
 } from "@/app/actions";
+import { OriginBadge } from "@/components/Badges";
 import type {
   TaskWithRelations,
   HorizonRecord,
@@ -23,11 +25,14 @@ import type {
 type Props = {
   task: TaskWithRelations | null;
   isNew: boolean;
+  canEdit: boolean;
+  currentUserName: string;
   horizons: HorizonRecord[];
   people: PersonRecord[];
   workstreams: string[];
   onClose: () => void;
   onSaved: () => void;
+  onCommented?: () => void;
 };
 
 type FormState = {
@@ -53,8 +58,30 @@ type FormState = {
   evidence: string;
   doneCriteria: string;
   source: string;
+  origin: string;
   notes: string;
 };
+
+const ORIGINS = ["Dora", "Transformation Plan (only)"] as const;
+
+type CommentRecord = {
+  id: string;
+  authorName: string;
+  body: string;
+  createdAt: Date | string;
+};
+
+function formatStamp(d: Date | string): string {
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 function toDateInput(d: Date | string | null | undefined): string {
   if (!d) return "";
@@ -87,6 +114,7 @@ function initState(task: TaskWithRelations | null, fallbackWs: string): FormStat
     evidence: task?.evidence ?? "",
     doneCriteria: task?.doneCriteria ?? "",
     source: task?.source ?? "",
+    origin: task?.origin ?? "Transformation Plan (only)",
     notes: task?.notes ?? "",
   };
 }
@@ -98,16 +126,54 @@ const inputCls =
 export function TaskDrawer({
   task,
   isNew,
+  canEdit,
+  currentUserName,
   horizons,
   people,
   workstreams,
   onClose,
   onSaved,
+  onCommented,
 }: Props) {
   const [form, setForm] = useState<FormState>(() =>
     initState(task, workstreams[0] ?? ""),
   );
   const [pending, startTransition] = useTransition();
+
+  const [comments, setComments] = useState<CommentRecord[]>(
+    () => (task?.comments as CommentRecord[] | undefined) ?? [],
+  );
+  const [commentBody, setCommentBody] = useState("");
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [commentPending, startComment] = useTransition();
+
+  function handleAddComment() {
+    if (!task) return;
+    setCommentError(null);
+    if (!commentBody.trim()) {
+      setCommentError("Please enter a comment.");
+      return;
+    }
+    const body = commentBody.trim();
+    startComment(async () => {
+      const res = await addComment(task.id, body);
+      if (!res.ok) {
+        setCommentError(res.error);
+        return;
+      }
+      setComments((prev) => [
+        ...prev,
+        {
+          id: `tmp-${Date.now()}`,
+          authorName: currentUserName,
+          body,
+          createdAt: new Date(),
+        },
+      ]);
+      setCommentBody("");
+      onCommented?.();
+    });
+  }
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -134,6 +200,7 @@ export function TaskDrawer({
       evidence: form.evidence || null,
       doneCriteria: form.doneCriteria || null,
       source: form.source || null,
+      origin: form.origin,
       notes: form.notes || null,
     };
     startTransition(async () => {
@@ -161,8 +228,9 @@ export function TaskDrawer({
       <div className="relative w-full max-w-2xl bg-white h-full overflow-y-auto scroll-thin shadow-xl flex flex-col">
         <div className="sticky top-0 z-10 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
           <div className="min-w-0">
-            <div className="text-xs font-medium text-slate-400">
-              {task?.itemId ?? (isNew ? "New task" : "Task")}
+            <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+              <span>{task?.itemId ?? (isNew ? "New task" : "Task")}</span>
+              {!isNew && <OriginBadge origin={form.origin} />}
             </div>
             <h2 className="text-lg font-bold text-slate-900 truncate">
               {isNew ? "Log a new task" : task?.title}
@@ -177,15 +245,31 @@ export function TaskDrawer({
           </button>
         </div>
 
-        <div className="px-6 py-5 space-y-5 flex-1">
-          <div>
-            <label className={labelCls}>Title *</label>
-            <input
-              className={inputCls}
-              value={form.title}
-              onChange={(e) => set("title", e.target.value)}
-              placeholder="Checklist item"
-            />
+        <fieldset disabled={!canEdit} className="px-6 py-5 space-y-5">
+          <div className="grid grid-cols-[1fr_auto] gap-4">
+            <div>
+              <label className={labelCls}>Title *</label>
+              <input
+                className={inputCls}
+                value={form.title}
+                onChange={(e) => set("title", e.target.value)}
+                placeholder="Checklist item"
+              />
+            </div>
+            <div>
+              <label className={labelCls}>Source label</label>
+              <select
+                className={inputCls}
+                value={form.origin}
+                onChange={(e) => set("origin", e.target.value)}
+              >
+                {ORIGINS.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -416,36 +500,116 @@ export function TaskDrawer({
             value={form.notes}
             onChange={(v) => set("notes", v)}
           />
-        </div>
+        </fieldset>
+
+        {!isNew && task && (
+          <div className="border-t border-slate-200 px-6 py-5 space-y-4">
+            <div className="flex items-center gap-2">
+              <MessageSquarePlus size={16} className="text-slate-500" />
+              <h3 className="text-sm font-semibold text-slate-700">
+                Comments
+                {comments.length > 0 ? ` (${comments.length})` : ""}
+              </h3>
+            </div>
+
+            {comments.length > 0 ? (
+              <ul className="space-y-3">
+                {comments.map((c) => (
+                  <li
+                    key={c.id}
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-sm font-semibold text-slate-800">
+                        {c.authorName}
+                      </span>
+                      <span className="text-xs text-slate-400 whitespace-nowrap">
+                        {formatStamp(c.createdAt)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-700 whitespace-pre-wrap">
+                      {c.body}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-slate-400">No comments yet.</p>
+            )}
+
+            <div className="rounded-lg border border-slate-200 p-3 space-y-2.5">
+              <textarea
+                className={`${inputCls} min-h-[72px] resize-y`}
+                value={commentBody}
+                onChange={(e) => setCommentBody(e.target.value)}
+                placeholder="Add a comment…"
+              />
+              {commentError && (
+                <p className="text-xs text-red-600">{commentError}</p>
+              )}
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400">
+                  Commenting as{" "}
+                  <span className="font-medium text-slate-600">
+                    {currentUserName}
+                  </span>
+                  . The date/time is recorded automatically.
+                </span>
+                <button
+                  onClick={handleAddComment}
+                  disabled={commentPending}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-50"
+                >
+                  <MessageSquarePlus size={15} />
+                  {commentPending ? "Adding…" : "Add comment"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="sticky bottom-0 bg-white border-t border-slate-200 px-6 py-4 flex items-center justify-between">
-          {!isNew ? (
-            <button
-              onClick={handleDelete}
-              disabled={pending}
-              className="inline-flex items-center gap-1.5 text-sm text-red-600 hover:text-red-700 font-medium disabled:opacity-50"
-            >
-              <Trash2 size={16} /> Delete
-            </button>
+          {canEdit ? (
+            <>
+              {!isNew ? (
+                <button
+                  onClick={handleDelete}
+                  disabled={pending}
+                  className="inline-flex items-center gap-1.5 text-sm text-red-600 hover:text-red-700 font-medium disabled:opacity-50"
+                >
+                  <Trash2 size={16} /> Delete
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={onClose}
+                  className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={pending || !form.title.trim()}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  <Save size={16} />
+                  {pending ? "Saving\u2026" : isNew ? "Create task" : "Save changes"}
+                </button>
+              </div>
+            </>
           ) : (
-            <span />
+            <>
+              <span />
+              <button
+                onClick={onClose}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </>
           )}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-100"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={pending || !form.title.trim()}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              <Save size={16} />
-              {pending ? "Saving\u2026" : isNew ? "Create task" : "Save changes"}
-            </button>
-          </div>
         </div>
       </div>
     </div>

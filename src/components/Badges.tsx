@@ -37,6 +37,25 @@ export function PriorityBadge({ priority }: { priority?: string | null }) {
   );
 }
 
+export function OriginBadge({ origin }: { origin?: string | null }) {
+  if (!origin) return null;
+  const isDora = origin === "Dora";
+  const color = isDora ? "#7c3aed" : "#0891b2";
+  return (
+    <span
+      className="inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold whitespace-nowrap"
+      style={{ background: hexToRgba(color, 0.14), color }}
+      title={
+        isDora
+          ? "Sourced from the Project Dora sheet"
+          : "From the Transformation Plan only"
+      }
+    >
+      {isDora ? "Dora" : "Transformation Plan"}
+    </span>
+  );
+}
+
 export function Pill({
   children,
   color,
