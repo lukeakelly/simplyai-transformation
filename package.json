@@ -15,7 +15,8 @@
     "mlvizz:generate-fixtures": "tsx scripts/generate-mlvizz-fixtures.ts",
     "test:mlvizz": "tsx scripts/test-mlvizz-contract.ts",
     "db:seed-mlvizz": "tsx scripts/seed-mlvizz.ts",
-    "db:reset-demo-data": "tsx scripts/reset-demo-data.ts"
+    "db:reset-demo-data": "tsx scripts/reset-demo-data.ts",
+    "test:resource-architecture": "tsx scripts/test-resource-planning-architecture.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
