@@ -20,7 +20,6 @@ import {
   Sparkles,
   SplitSquareHorizontal,
   UserCheck,
-  UserPlus,
   X,
 } from "lucide-react";
 import {
@@ -79,33 +78,6 @@ type MatchResult = {
   explanation: string[];
 };
 
-type NewMemberDraft = {
-  name: string;
-  role: string;
-  level: string;
-  pillar: string;
-  manager: string;
-  location: string;
-  employmentType: string;
-  dailyCapacityHours: string;
-  skills: string;
-  billRate: string;
-  costRate: string;
-};
-
-const defaultNewMemberDraft: NewMemberDraft = {
-  name: "",
-  role: "Data Engineer",
-  level: "Consultant",
-  pillar: "Data & AI",
-  manager: "Maya Chen",
-  location: "Sydney",
-  employmentType: "Permanent",
-  dailyCapacityHours: "8",
-  skills: "Python, Databricks",
-  billRate: "1500",
-  costRate: "700",
-};
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "centre", label: "Command Centre" },
@@ -339,7 +311,7 @@ export function ResourceCommandCentreClient({
   currentUser: CurrentResourceUser | null;
 }) {
   const [activeTab, setActiveTab] = useState<Tab>("centre");
-  const [people, setPeople] = useState<ResourcePerson[]>(resourcePeople);
+  const people = resourcePeople;
   const [assignments, setAssignments] = useState<ResourceAssignment[]>(initialAssignments ?? resourceAssignments);
   const [allocationHistory, setAllocationHistory] = useState<ResourceAllocationHistoryEntry[]>(() => {
     const persistedHistoryIds = new Set(initialAllocationHistory.map((entry) => entry.id));
@@ -362,13 +334,12 @@ export function ResourceCommandCentreClient({
   const [selectedDemandId, setSelectedDemandId] = useState(resourceDemands[0]?.id ?? "");
   const [conflict, setConflict] = useState<ConflictDraft | null>(null);
   const [search, setSearch] = useState("");
-  const [pillar, setPillar] = useState("");
+  const [businessUnit, setBusinessUnit] = useState("");
   const [skill, setSkill] = useState("");
   const [status, setStatus] = useState("");
   const [financeVisible, setFinanceVisible] = useState(true);
   const [overrideReason, setOverrideReason] = useState("Delivery continuity approved by COO");
   const [comment, setComment] = useState("@Maya please review this clash before Friday.");
-  const [newMemberDraft, setNewMemberDraft] = useState<NewMemberDraft>(defaultNewMemberDraft);
   const [scheduleStartDate, setScheduleStartDate] = useState(TODAY);
   const [scheduleWindowDays, setScheduleWindowDays] = useState(130);
   const [scheduleColumnWidth, setScheduleColumnWidth] = useState(72);
@@ -380,13 +351,13 @@ export function ResourceCommandCentreClient({
   const selectedPerson = selectedPersonId ? people.find((person) => person.id === selectedPersonId) ?? null : null;
   const selectedDemand = resourceDemands.find((demand) => demand.id === selectedDemandId) ?? resourceDemands[0];
   const selectedMatches = useMemo(() => matchCandidates(selectedDemand, assignments, people), [assignments, people, selectedDemand]);
-  const pillars = [...new Set(people.map((person) => person.pillar))];
+  const businessUnits = [...new Set(people.map((person) => person.pillar))];
   const skills = [...new Set(people.flatMap((person) => person.skills))].sort();
 
   const filteredPeople = people.filter((person) => {
     const haystack = `${person.employeeNo} ${person.name} ${person.role} ${person.level} ${person.manager} ${person.location} ${person.skills.join(" ")}`.toLowerCase();
     if (search && !haystack.includes(search.toLowerCase())) return false;
-    if (pillar && person.pillar !== pillar) return false;
+    if (businessUnit && person.pillar !== businessUnit) return false;
     if (skill && !person.skills.includes(skill)) return false;
     return true;
   });
@@ -501,50 +472,6 @@ export function ResourceCommandCentreClient({
     });
   }
 
-  function addTeamMember() {
-    const name = newMemberDraft.name.trim();
-    if (!name) return;
-    const nextNumber = people.length + 1;
-    const skills = newMemberDraft.skills
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-    const created: ResourcePerson = {
-      id: `p-custom-${Date.now()}`,
-      employeeNo: `SIA-${String(nextNumber).padStart(3, "0")}`,
-      name,
-      role: newMemberDraft.role.trim() || "Consultant",
-      level: newMemberDraft.level.trim() || "Consultant",
-      pillar: newMemberDraft.pillar.trim() || "Unassigned",
-      manager: newMemberDraft.manager.trim() || "Unassigned",
-      location: newMemberDraft.location.trim() || "Unassigned",
-      employmentType: newMemberDraft.employmentType.trim() || "Permanent",
-      dailyCapacityHours: Number(newMemberDraft.dailyCapacityHours) || 8,
-      skills: skills.length > 0 ? skills : ["Unspecified"],
-      certifications: [],
-      billRate: Number(newMemberDraft.billRate) || 0,
-      costRate: Number(newMemberDraft.costRate) || 0,
-      tags: ["new-team-member"],
-    };
-    setPeople((items) => [...items, created]);
-    setSearch(name);
-    setActiveTab("people");
-    setSelectedPersonId(created.id);
-    setNewMemberDraft(defaultNewMemberDraft);
-    appendAudit("Added team member", created.name, `${created.employeeNo} added to ${created.pillar} with ${created.skills.join(", ")}.`);
-    void saveResourcePlanningEvent({
-      eventType: "team-member",
-      sourceRecordId: created.id,
-      correlationId: `resource-person-${Date.now()}`,
-      payload: {
-        personId: created.id,
-        employeeNo: created.employeeNo,
-        name: created.name,
-        role: created.role,
-        sourceOfTruth: "resource-app",
-      },
-    });
-  }
 
   function moveAssignment(assignmentId: string, personId: string, date: string) {
     const current = assignments.find((assignment) => assignment.id === assignmentId);
@@ -724,8 +651,7 @@ export function ResourceCommandCentreClient({
       </header>
 
       <main className="space-y-6 p-6">
-        <FreshnessBanner />
-        <FilterBar search={search} setSearch={setSearch} pillar={pillar} setPillar={setPillar} skill={skill} setSkill={setSkill} status={status} setStatus={setStatus} pillars={pillars} skills={skills} />
+        <FilterBar search={search} setSearch={setSearch} businessUnit={businessUnit} setBusinessUnit={setBusinessUnit} skill={skill} setSkill={setSkill} status={status} setStatus={setStatus} businessUnits={businessUnits} skills={skills} />
         {activeTab === "centre" && <CommandCentre dashboard={dashboard} financeVisible={financeVisible} setActiveTab={setActiveTab} currentUser={currentUser} />}
         {activeTab === "schedule" && (
           <Schedule
@@ -759,7 +685,7 @@ export function ResourceCommandCentreClient({
         {activeTab === "demand" && (
           <DemandPanel assignments={assignments} selectedDemandId={selectedDemandId} setSelectedDemandId={setSelectedDemandId} selectedMatches={selectedMatches} createAssignmentFromDemand={createAssignmentFromDemand} onOpenPerson={openPersonDetail} onOpenEngagement={setSelectedEngagementId} />
         )}
-        {activeTab === "people" && <PeopleDirectory people={filteredPeople} assignments={assignments} financeVisible={financeVisible} draft={newMemberDraft} setDraft={setNewMemberDraft} addTeamMember={addTeamMember} onOpenPerson={openPersonDetail} currentUser={currentUser} />}
+        {activeTab === "people" && <PeopleDirectory people={filteredPeople} assignments={assignments} financeVisible={financeVisible} onOpenPerson={openPersonDetail} />}
         {activeTab === "bench" && <BenchView people={filteredPeople} assignments={assignments} onOpenPerson={openPersonDetail} />}
         {activeTab === "migration" && <MigrationReview />}
         {activeTab === "approvals" && <ApprovalsAudit assignments={assignments} people={people} audit={audit} selectedAssignment={selectedAssignment} comment={comment} setComment={setComment} addComment={addComment} approveSelectedOverride={approveSelectedOverride} onOpenPerson={openPersonDetail} comments={comments} addResourceComment={addResourceComment} currentUser={currentUser} />}
@@ -814,6 +740,36 @@ function PersonNameLink({ person, onOpenPerson, className = "" }: { person: Reso
       className={`cursor-pointer font-bold text-blue-700 underline decoration-blue-300 underline-offset-2 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-300 ${className}`}
     >
       {person.name}
+    </span>
+  );
+}
+
+function ClientHubSpotLink({ client, hubspotDealUrl, className = "" }: { client: string; hubspotDealUrl: string | null; className?: string }) {
+  if (!hubspotDealUrl) return <span className={className}>{client}</span>;
+  const url = hubspotDealUrl;
+  function openHubSpot() {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+  function handleKeyDown(event: KeyboardEvent<HTMLSpanElement>) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      event.stopPropagation();
+      openHubSpot();
+    }
+  }
+  return (
+    <span
+      role="link"
+      tabIndex={0}
+      onClick={(event) => {
+        event.stopPropagation();
+        openHubSpot();
+      }}
+      onKeyDown={handleKeyDown}
+      className={`cursor-pointer underline decoration-blue-300 underline-offset-2 hover:text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-300 ${className}`}
+      title="Open HubSpot deal"
+    >
+      {client}
     </span>
   );
 }
@@ -898,7 +854,9 @@ function EngagementDetailModal({
       <div className="mx-auto flex max-h-[92vh] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
           <div>
-            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{project.client} · {project.code}</div>
+            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">
+                <ClientHubSpotLink client={project.client} hubspotDealUrl={project.hubspotDealUrl} /> · {project.code}
+              </div>
             <h2 className="mt-1 text-2xl font-bold text-slate-950">{project.name}</h2>
             <p className="text-sm text-slate-500">HubSpot deal {project.hubspotDealId ?? "not mapped"} · Sales: {project.salesOwner} · Delivery: {project.deliveryLead}</p>
           </div>
@@ -982,7 +940,7 @@ function PersonDetailModal({
       <div className="mx-auto flex max-h-[92vh] max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
         <div className="flex items-start justify-between gap-4 border-b border-slate-200 p-5">
           <div>
-            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{person.employeeNo} · {person.pillar}</div>
+            <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{person.employeeNo} · Business Unit: {person.pillar}</div>
             <h2 className="mt-1 text-2xl font-bold text-slate-950">{person.name}</h2>
             <p className="text-sm text-slate-500">{person.role} · {person.level} · {person.location} · Manager: {person.manager}</p>
           </div>
@@ -1012,7 +970,9 @@ function PersonDetailModal({
                     <div key={assignment.id} className="rounded-xl border border-slate-200 p-3">
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className="font-bold text-slate-950">{project.client} · {assignment.role}</div>
+                          <div className="font-bold text-slate-950">
+                            <ClientHubSpotLink client={project.client} hubspotDealUrl={project.hubspotDealUrl} /> · {assignment.role}
+                          </div>
                           <div className="text-xs text-slate-500">{assignment.start} to {assignment.end} · {assignment.source}</div>
                         </div>
                         <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-bold text-blue-700">{assignment.status}</span>
@@ -1099,24 +1059,24 @@ function FreshnessBanner() {
 function FilterBar({
   search,
   setSearch,
-  pillar,
-  setPillar,
+  businessUnit,
+  setBusinessUnit,
   skill,
   setSkill,
   status,
   setStatus,
-  pillars,
+  businessUnits,
   skills,
 }: {
   search: string;
   setSearch: (value: string) => void;
-  pillar: string;
-  setPillar: (value: string) => void;
+  businessUnit: string;
+  setBusinessUnit: (value: string) => void;
   skill: string;
   setSkill: (value: string) => void;
   status: string;
   setStatus: (value: string) => void;
-  pillars: string[];
+  businessUnits: string[];
   skills: string[];
 }) {
   return (
@@ -1131,9 +1091,9 @@ function FilterBar({
             className="w-72 rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm focus:border-blue-500 focus:outline-none"
           />
         </div>
-        <select value={pillar} onChange={(event) => setPillar(event.target.value)} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
-          <option value="">All pillars</option>
-          {pillars.map((item) => (
+        <select value={businessUnit} onChange={(event) => setBusinessUnit(event.target.value)} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+          <option value="">All business units</option>
+          {businessUnits.map((item) => (
             <option key={item}>{item}</option>
           ))}
         </select>
@@ -1410,7 +1370,9 @@ function Schedule({
                               className={`w-full rounded-md border px-2 py-1 text-left text-[11px] shadow-sm ${assignmentRagClasses(rag)} ${statusClasses[assignment.status]} ${selectedAssignment?.id === assignment.id ? "ring-2 ring-offset-1 ring-blue-400" : ""}`}
                             >
                               <div className="flex items-center justify-between gap-1">
-                                <span className="truncate font-bold">{project.client} · {assignment.allocationPct}%</span>
+                                <span className="min-w-0 truncate font-bold">
+                                  <ClientHubSpotLink client={project.client} hubspotDealUrl={project.hubspotDealUrl} /> · {assignment.allocationPct}%
+                                </span>
                                 {attention && <AlertTriangle size={11} className="shrink-0" />}
                               </div>
                               <div className="truncate opacity-90">{assignment.role}</div>
@@ -1458,7 +1420,9 @@ function Schedule({
                 onDragStart={(event) => event.dataTransfer.setData("application/json", encodeDrag({ kind: "demand", id: demand.id }))}
                 className="w-full rounded-xl border border-dashed border-blue-300 bg-blue-50 p-3 text-left hover:bg-blue-100"
               >
-                <div className="font-bold text-blue-950">{demand.client} · {demand.role}</div>
+                <div className="font-bold text-blue-950">
+                    <ClientHubSpotLink client={demand.client} hubspotDealUrl={demand.hubspotDealUrl} /> · {demand.role}
+                  </div>
                 <div className="text-xs text-blue-700">{demand.allocationPct}% · {demand.stage} · expires {formatDate(demand.expiryDate)}</div>
               </button>
             ))}
@@ -1508,7 +1472,9 @@ function AssignmentDrawer({
   return (
     <div className="mt-4 space-y-4">
       <div>
-        <div className="text-xs font-bold uppercase tracking-wide text-slate-400">{project.client} / {project.code}</div>
+        <div className="text-xs font-bold uppercase tracking-wide text-slate-400">
+          <ClientHubSpotLink client={project.client} hubspotDealUrl={project.hubspotDealUrl} /> / {project.code}
+        </div>
         <div className="text-lg font-bold text-slate-950">{assignment.role}</div>
         <div className="text-sm text-slate-500">{person ? <PersonNameLink person={person} onOpenPerson={onOpenPerson} className="text-sm" /> : "Unfilled"} · {assignment.start} to {assignment.end}</div>
       </div>
@@ -1591,7 +1557,7 @@ function DemandPanel({
         <div className="mt-4 space-y-3">
           {resourceDemands.map((demand) => (
             <button key={demand.id} onClick={() => setSelectedDemandId(demand.id)} className={`w-full rounded-xl border p-4 text-left ${selectedDemandId === demand.id ? "border-blue-400 bg-blue-50" : "border-slate-200 hover:bg-slate-50"}`}>
-              <div className="flex items-center justify-between"><span className="font-bold text-slate-950">{demand.client}</span><span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs font-bold text-white">{demand.stage}</span></div>
+              <div className="flex items-center justify-between gap-3"><ClientHubSpotLink client={demand.client} hubspotDealUrl={demand.hubspotDealUrl} className="font-bold text-slate-950" /><span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs font-bold text-white">{demand.stage}</span></div>
               <div className="mt-1 text-sm text-slate-600">{demand.role} · {demand.allocationPct}% · {demand.level}</div>
               <div className="mt-2 flex flex-wrap gap-1">{demand.requiredSkills.map((item) => <span key={item} className="rounded bg-blue-100 px-2 py-0.5 text-xs font-semibold text-blue-700">{item}</span>)}</div>
             </button>
@@ -1607,7 +1573,7 @@ function DemandPanel({
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h3><PersonNameLink person={match.person} onOpenPerson={onOpenPerson} /></h3>
-                  <p className="text-sm text-slate-500">{match.person.role} · {match.person.pillar}</p>
+                  <p className="text-sm text-slate-500">{match.person.role} · Business Unit: {match.person.pillar}</p>
                 </div>
                 <div className="rounded-xl bg-blue-50 px-3 py-2 text-center"><div className="text-lg font-bold text-blue-700">{match.score}</div><div className="text-[10px] font-bold uppercase text-blue-500">match</div></div>
               </div>
@@ -1629,46 +1595,20 @@ function DemandPanel({
   );
 }
 
-function PeopleDirectory({ people, assignments, financeVisible, draft, setDraft, addTeamMember, onOpenPerson, currentUser }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; financeVisible: boolean; draft: NewMemberDraft; setDraft: (draft: NewMemberDraft) => void; addTeamMember: () => void; onOpenPerson: (personId: string) => void; currentUser: CurrentResourceUser | null }) {
-  const canEdit = currentUser?.canEdit ?? false;
+function PeopleDirectory({ people, assignments, financeVisible, onOpenPerson }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; financeVisible: boolean; onOpenPerson: (personId: string) => void }) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-200 px-5 py-4">
         <h2 className="text-lg font-bold text-slate-950">People & skills directory</h2>
-        <p className="text-sm text-slate-500">Stable IDs, working patterns, skills, certifications, locations and controlled rate visibility.</p>
-      </div>
-      <div className="border-b border-slate-200 bg-slate-50 p-5">
-        <div className="mb-3 flex items-center gap-2 font-bold text-slate-950">
-          <UserPlus size={18} /> Add team member
-        </div>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <MemberInput label="Name" value={draft.name} onChange={(value) => setDraft({ ...draft, name: value })} placeholder="e.g. Morgan Lee" />
-          <MemberInput label="Role" value={draft.role} onChange={(value) => setDraft({ ...draft, role: value })} />
-          <MemberInput label="Level" value={draft.level} onChange={(value) => setDraft({ ...draft, level: value })} />
-          <MemberInput label="Pillar" value={draft.pillar} onChange={(value) => setDraft({ ...draft, pillar: value })} />
-          <MemberInput label="Manager" value={draft.manager} onChange={(value) => setDraft({ ...draft, manager: value })} />
-          <MemberInput label="Location" value={draft.location} onChange={(value) => setDraft({ ...draft, location: value })} />
-          <MemberInput label="Employment type" value={draft.employmentType} onChange={(value) => setDraft({ ...draft, employmentType: value })} />
-          <MemberInput label="Daily hours" value={draft.dailyCapacityHours} onChange={(value) => setDraft({ ...draft, dailyCapacityHours: value })} />
-          <MemberInput label="Skills" value={draft.skills} onChange={(value) => setDraft({ ...draft, skills: value })} className="xl:col-span-2" />
-          <MemberInput label="Bill rate" value={draft.billRate} onChange={(value) => setDraft({ ...draft, billRate: value })} />
-          <MemberInput label="Cost rate" value={draft.costRate} onChange={(value) => setDraft({ ...draft, costRate: value })} />
-        </div>
-        <button
-          onClick={addTeamMember}
-          disabled={!canEdit || !draft.name.trim()}
-          className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <UserPlus size={16} /> Add team member
-        </button>
-        {!canEdit && <p className="mt-2 text-xs text-slate-500">Read-only RBAC roles can inspect people but cannot add team members.</p>}
+        <p className="text-sm text-slate-500">Stable IDs, business units, working patterns, skills, certifications, locations and controlled rate visibility.</p>
+        <p className="mt-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">Team members are imported from Employment Hero through MLVizz; manual creation is disabled in the planning workspace.</p>
       </div>
       <div className="overflow-auto">
         <table className="min-w-full divide-y divide-slate-200 text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-4 py-3">Person</th>
-              <th className="px-4 py-3">Pillar</th>
+              <th className="px-4 py-3">Business Unit</th>
               <th className="px-4 py-3">Manager</th>
               <th className="px-4 py-3">Location</th>
               <th className="px-4 py-3">Skills</th>
@@ -1698,19 +1638,6 @@ function PeopleDirectory({ people, assignments, financeVisible, draft, setDraft,
   );
 }
 
-function MemberInput({ label, value, onChange, placeholder, className = "" }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; className?: string }) {
-  return (
-    <label className={`block ${className}`}>
-      <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-500">{label}</span>
-      <input
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none"
-      />
-    </label>
-  );
-}
 
 function BenchView({ people, assignments, onOpenPerson }: { people: ResourcePerson[]; assignments: ResourceAssignment[]; onOpenPerson: (personId: string) => void }) {
   const days = businessDays(TODAY, 10);
@@ -1734,7 +1661,11 @@ function BenchView({ people, assignments, onOpenPerson }: { people: ResourcePers
               Bench duration: {bench.days === 0 ? bench.label : `${bench.days} days (${bench.label})`}
             </div>
             <div className="mt-3 flex flex-wrap gap-1">{person.tags.map((item) => <span key={item} className="rounded bg-white px-2 py-0.5 text-xs font-semibold text-slate-600">{item}</span>)}</div>
-            {ending && <div className="mt-3 rounded-lg bg-blue-50 p-2 text-xs font-semibold text-blue-700">Ending soon: {assignmentProject(ending).client} on {formatDate(ending.end)}</div>}
+            {ending && (
+                <div className="mt-3 rounded-lg bg-blue-50 p-2 text-xs font-semibold text-blue-700">
+                  Ending soon: <ClientHubSpotLink client={assignmentProject(ending).client} hubspotDealUrl={assignmentProject(ending).hubspotDealUrl} /> on {formatDate(ending.end)}
+                </div>
+              )}
           </div>
         ))}
       </div>
@@ -1744,7 +1675,9 @@ function BenchView({ people, assignments, onOpenPerson }: { people: ResourcePers
 
 function MigrationReview() {
   return (
-    <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_360px]">
+    <div className="space-y-6">
+      <FreshnessBanner />
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_360px]">
       <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="border-b border-slate-200 px-5 py-4">
           <h2 className="flex items-center gap-2 text-lg font-bold text-slate-950"><FileSpreadsheet size={19} /> MLVizz synchronisation and reconciliation</h2>
@@ -1795,9 +1728,9 @@ function MigrationReview() {
         </div>
       </section>
     </div>
-  );
+  </div>
+);
 }
-
 function SummaryLine({ label, value }: { label: string; value: string }) {
   return <div className="flex justify-between border-b border-slate-100 pb-2"><span>{label}</span><b className="text-slate-950">{value}</b></div>;
 }
