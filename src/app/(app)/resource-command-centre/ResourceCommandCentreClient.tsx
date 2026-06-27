@@ -78,6 +78,13 @@ type MatchResult = {
   explanation: string[];
 };
 
+type ScheduleGanttSegment = {
+  assignment: ResourceAssignment;
+  startIndex: number;
+  span: number;
+  lane: number;
+};
+
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "centre", label: "Command Centre" },
@@ -177,6 +184,29 @@ function getLeavePct(assignments: ResourceAssignment[], personId: string, date: 
 
 function getAvailablePct(assignments: ResourceAssignment[], personId: string, date: string) {
   return Math.max(0, 100 - getLeavePct(assignments, personId, date));
+}
+
+function scheduleGanttSegments(assignments: ResourceAssignment[], days: string[]) {
+  const laneEnds: number[] = [];
+  return assignments
+    .map((assignment) => {
+      const visibleIndexes = days.map((day, index) => (overlaps(day, assignment) ? index : -1)).filter((index) => index >= 0);
+      if (visibleIndexes.length === 0) return null;
+      return {
+        assignment,
+        startIndex: visibleIndexes[0],
+        span: visibleIndexes.length,
+        lane: 0,
+      };
+    })
+    .filter((segment): segment is ScheduleGanttSegment => segment !== null)
+    .sort((left, right) => left.startIndex - right.startIndex || left.assignment.end.localeCompare(right.assignment.end))
+    .map((segment) => {
+      const reusableLane = laneEnds.findIndex((endIndex) => endIndex < segment.startIndex);
+      const lane = reusableLane >= 0 ? reusableLane : laneEnds.length;
+      laneEnds[lane] = segment.startIndex + segment.span - 1;
+      return { ...segment, lane };
+    });
 }
 
 function getAssignmentRevenue(assignment: ResourceAssignment, people: ResourcePerson[] = resourcePeople) {
@@ -530,7 +560,7 @@ export function ResourceCommandCentreClient({
     persistAssignment(created, "Created assignment from demand");
   }
 
-  function onDropCell(event: DragEvent<HTMLDivElement>, person: ResourcePerson, date: string) {
+  function onDropCell(event: DragEvent<HTMLElement>, person: ResourcePerson, date: string) {
     event.preventDefault();
     const payload = decodeDrag(event.dataTransfer.getData("application/json"));
     if (!payload) return;
@@ -1280,7 +1310,7 @@ function Schedule({
   setSelectedAssignmentId: (id: string) => void;
   onOpenPerson: (personId: string) => void;
   onOpenEngagement: (projectId: string) => void;
-  onDropCell: (event: DragEvent<HTMLDivElement>, person: ResourcePerson, date: string) => void;
+  onDropCell: (event: DragEvent<HTMLElement>, person: ResourcePerson, date: string) => void;
   resizeAssignment: (days: number) => void;
   splitAssignment: () => void;
   approveSelectedOverride: () => void;
@@ -1328,65 +1358,75 @@ function Schedule({
                 <div key={day} className="sticky top-0 z-30 border-r border-slate-200 bg-slate-50 px-2 py-3 text-center text-xs font-bold text-slate-600">{formatDate(day)}</div>
               ))}
             </div>
-            {people.map((person) => (
-              <div key={person.id} className="grid border-b border-slate-100" style={{ gridTemplateColumns: scheduleColumns }}>
-                <div className="sticky left-0 z-10 border-r border-slate-200 bg-white p-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">{compactName(person.name)}</div>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm"><PersonNameLink person={person} onOpenPerson={onOpenPerson} className="text-sm" /></div>
-                      <div className="truncate text-xs text-slate-500">{person.level} · {person.location}</div>
+            {people.map((person) => {
+              const personAssignments = assignments.filter((assignment) => assignment.personId === person.id);
+              const ganttSegments = scheduleGanttSegments(personAssignments, days);
+              const laneCount = Math.max(1, ...ganttSegments.map((segment) => segment.lane + 1));
+              const scheduleRows = `32px repeat(${laneCount}, minmax(34px, auto))`;
+              return (
+                <div key={person.id} className="grid border-b border-slate-100" style={{ gridTemplateColumns: scheduleColumns, gridTemplateRows: scheduleRows }}>
+                  <div className="sticky left-0 z-20 border-r border-slate-200 bg-white p-3" style={{ gridRow: `1 / span ${laneCount + 1}` }}>
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">{compactName(person.name)}</div>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm"><PersonNameLink person={person} onOpenPerson={onOpenPerson} className="text-sm" /></div>
+                        <div className="truncate text-xs text-slate-500">{person.level} · {person.location}</div>
+                      </div>
                     </div>
                   </div>
+                  {days.map((day, dayIndex) => {
+                    const bookedPct = getBookedPct(assignments, person.id, day, false);
+                    const availablePct = getAvailablePct(assignments, person.id, day);
+                    const over = bookedPct > availablePct;
+                    return (
+                      <div
+                        key={`${person.id}-${day}`}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => onDropCell(event, person, day)}
+                        className={`min-h-24 border-r border-slate-100 p-1.5 ${over ? "bg-red-50" : availablePct === 0 ? "bg-slate-100" : "bg-white"}`}
+                        style={{ gridColumn: dayIndex + 2, gridRow: `1 / span ${laneCount + 1}` }}
+                      >
+                        <div className={`rounded px-1.5 py-0.5 text-center text-[10px] font-bold ${over ? "bg-red-100 text-red-700" : availablePct - bookedPct >= 50 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-500"}`}>
+                          {pct(bookedPct)} / {pct(availablePct)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {ganttSegments.map(({ assignment, startIndex, span, lane }) => {
+                    const project = assignmentProject(assignment);
+                    const rag = assignmentRag(assignment, assignments);
+                    const attention = attentionForAssignment(assignment, assignments);
+                    return (
+                      <button
+                        key={assignment.id}
+                        draggable
+                        onDragStart={(event) => event.dataTransfer.setData("application/json", encodeDrag({ kind: "assignment", id: assignment.id }))}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => {
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const rawOffset = bounds.width > 0 ? Math.floor(((event.clientX - bounds.left) / bounds.width) * span) : 0;
+                          const dayOffset = Math.max(0, Math.min(span - 1, rawOffset));
+                          onDropCell(event, person, days[startIndex + dayOffset] ?? days[startIndex]);
+                        }}
+                        onClick={() => setSelectedAssignmentId(assignment.id)}
+                        onDoubleClick={() => onOpenEngagement(assignment.projectId)}
+                        title={attention ?? `RAG ${rag}: stable allocation`}
+                        className={`z-10 my-1 min-w-0 rounded-md border px-2 py-1 text-left text-[11px] shadow-sm ${assignmentRagClasses(rag)} ${statusClasses[assignment.status]} ${selectedAssignment?.id === assignment.id ? "ring-2 ring-blue-400 ring-offset-1" : ""}`}
+                        style={{ gridColumn: `${startIndex + 2} / span ${span}`, gridRow: lane + 2 }}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="min-w-0 truncate font-bold">
+                            <ClientHubSpotLink client={project.client} hubspotDealUrl={project.hubspotDealUrl} /> · {assignment.allocationPct}% · {formatDate(assignment.start)}–{formatDate(assignment.end)}
+                          </span>
+                          {attention && <AlertTriangle size={11} className="shrink-0" />}
+                        </div>
+                        <div className="truncate opacity-90">{assignment.role}</div>
+                      </button>
+                    );
+                  })}
                 </div>
-                {days.map((day) => {
-                  const dailyAssignments = assignments.filter((assignment) => assignment.personId === person.id && overlaps(day, assignment));
-                  const bookedPct = getBookedPct(assignments, person.id, day, false);
-                  const availablePct = getAvailablePct(assignments, person.id, day);
-                  const over = bookedPct > availablePct;
-                  return (
-                    <div
-                      key={`${person.id}-${day}`}
-                      onDragOver={(event) => event.preventDefault()}
-                      onDrop={(event) => onDropCell(event, person, day)}
-                      className={`min-h-28 border-r border-slate-100 p-1.5 ${over ? "bg-red-50" : availablePct === 0 ? "bg-slate-100" : "bg-white"}`}
-                    >
-                      <div className={`mb-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${over ? "bg-red-100 text-red-700" : availablePct - bookedPct >= 50 ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-500"}`}>
-                        {pct(bookedPct)} / {pct(availablePct)}
-                      </div>
-                      <div className="space-y-1">
-                        {dailyAssignments.slice(0, 3).map((assignment) => {
-                          const project = assignmentProject(assignment);
-                          const rag = assignmentRag(assignment, assignments);
-                          const attention = attentionForAssignment(assignment, assignments);
-                          return (
-                            <button
-                              key={assignment.id}
-                              draggable
-                              onDragStart={(event) => event.dataTransfer.setData("application/json", encodeDrag({ kind: "assignment", id: assignment.id }))}
-                              onClick={() => setSelectedAssignmentId(assignment.id)}
-                              onDoubleClick={() => onOpenEngagement(assignment.projectId)}
-                              title={attention ?? `RAG ${rag}: stable allocation`}
-                              className={`w-full rounded-md border px-2 py-1 text-left text-[11px] shadow-sm ${assignmentRagClasses(rag)} ${statusClasses[assignment.status]} ${selectedAssignment?.id === assignment.id ? "ring-2 ring-offset-1 ring-blue-400" : ""}`}
-                            >
-                              <div className="flex items-center justify-between gap-1">
-                                <span className="min-w-0 truncate font-bold">
-                                  <ClientHubSpotLink client={project.client} hubspotDealUrl={project.hubspotDealUrl} /> · {assignment.allocationPct}%
-                                </span>
-                                {attention && <AlertTriangle size={11} className="shrink-0" />}
-                              </div>
-                              <div className="truncate opacity-90">{assignment.role}</div>
-                              <div className="truncate text-[10px] opacity-80">{rag}</div>
-                            </button>
-                          );
-                        })}
-                        {dailyAssignments.length > 3 && <div className="rounded bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-500">+{dailyAssignments.length - 3} more</div>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>
