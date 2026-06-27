@@ -560,7 +560,7 @@ export function ResourceCommandCentreClient({
     persistAssignment(created, "Created assignment from demand");
   }
 
-  function onDropCell(event: DragEvent<HTMLDivElement>, person: ResourcePerson, date: string) {
+  function onDropCell(event: DragEvent<HTMLElement>, person: ResourcePerson, date: string) {
     event.preventDefault();
     const payload = decodeDrag(event.dataTransfer.getData("application/json"));
     if (!payload) return;
@@ -1310,7 +1310,7 @@ function Schedule({
   setSelectedAssignmentId: (id: string) => void;
   onOpenPerson: (personId: string) => void;
   onOpenEngagement: (projectId: string) => void;
-  onDropCell: (event: DragEvent<HTMLDivElement>, person: ResourcePerson, date: string) => void;
+  onDropCell: (event: DragEvent<HTMLElement>, person: ResourcePerson, date: string) => void;
   resizeAssignment: (days: number) => void;
   splitAssignment: () => void;
   approveSelectedOverride: () => void;
@@ -1401,6 +1401,13 @@ function Schedule({
                         key={assignment.id}
                         draggable
                         onDragStart={(event) => event.dataTransfer.setData("application/json", encodeDrag({ kind: "assignment", id: assignment.id }))}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => {
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const rawOffset = bounds.width > 0 ? Math.floor(((event.clientX - bounds.left) / bounds.width) * span) : 0;
+                          const dayOffset = Math.max(0, Math.min(span - 1, rawOffset));
+                          onDropCell(event, person, days[startIndex + dayOffset] ?? days[startIndex]);
+                        }}
                         onClick={() => setSelectedAssignmentId(assignment.id)}
                         onDoubleClick={() => onOpenEngagement(assignment.projectId)}
                         title={attention ?? `RAG ${rag}: stable allocation`}
