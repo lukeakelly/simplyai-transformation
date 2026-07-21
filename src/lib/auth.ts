@@ -20,6 +20,7 @@ export type Session = {
   role: string;
   permission: "editor" | "viewer";
   isAdmin: boolean;
+  hubspotOwnerId: string | null;
   /** Active mode — only meaningful for admin-capable users. */
   mode: Mode;
   /** True when the user is allowed to mutate data. */
@@ -94,6 +95,7 @@ export async function getSession(): Promise<Session | null> {
     role: user.role,
     permission,
     isAdmin: user.isAdmin,
+    hubspotOwnerId: user.hubspotOwnerId,
     mode,
     canEdit: permission === "editor",
     adminView: user.isAdmin && mode === "admin",
