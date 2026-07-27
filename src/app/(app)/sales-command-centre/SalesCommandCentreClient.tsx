@@ -7,11 +7,13 @@ import {
   Calendar,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Clock3,
   ExternalLink,
   Flame,
   RefreshCw,
+  ShieldAlert,
   Sparkles,
   Target,
   TrendingUp,
@@ -95,26 +97,39 @@ function Card({
   icon,
   action,
   children,
+  defaultCollapsed = false,
 }: {
   title: string;
   subtitle?: string;
   icon?: React.ReactNode;
   action?: React.ReactNode;
   children: React.ReactNode;
+  defaultCollapsed?: boolean;
 }) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-            {icon}
-            {title}
-          </h2>
-          {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
-        </div>
+      <div className={`flex flex-wrap items-start justify-between gap-3 ${collapsed ? "" : "mb-4"}`}>
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          aria-expanded={!collapsed}
+          className="flex items-start gap-2 text-left group -m-1 p-1 rounded-lg hover:bg-slate-50"
+        >
+          <span className="mt-0.5 text-slate-400 group-hover:text-slate-600">
+            {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+          </span>
+          <span>
+            <h2 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+              {icon}
+              {title}
+            </h2>
+            {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
+          </span>
+        </button>
         {action}
       </div>
-      {children}
+      {!collapsed && children}
     </section>
   );
 }
@@ -675,6 +690,55 @@ export function SalesCommandCentreClient({
                     <div className="flex flex-col items-end gap-1">
                       <span className="text-[11px] rounded-full bg-slate-100 px-2 py-0.5 text-slate-600">{gap.category}</span>
                       <a href={gap.dealUrl} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 font-medium inline-flex items-center gap-1">
+                        Open <ExternalLink size={10} />
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* Data hygiene — contacts & companies */}
+          <Card
+            title="Data hygiene — contacts & companies"
+            subtitle="Record-level gaps on the people and companies behind your deals"
+            icon={<ShieldAlert size={16} className="text-amber-600" />}
+          >
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+              {[
+                ["Contacts missing email", viewModel.contactCompanyHygiene.contactsMissingEmail, viewModel.contactCompanyHygiene.contactCount],
+                ["Contacts missing job title", viewModel.contactCompanyHygiene.contactsMissingJobTitle, viewModel.contactCompanyHygiene.contactCount],
+                ["Companies missing domain", viewModel.contactCompanyHygiene.companiesMissingDomain, viewModel.contactCompanyHygiene.companyCount],
+                ["Companies missing industry", viewModel.contactCompanyHygiene.companiesMissingIndustry, viewModel.contactCompanyHygiene.companyCount],
+              ].map(([label, value, total]) => (
+                <div key={label as string} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                  <div className="text-[11px] text-slate-500">{label}</div>
+                  <div className="text-lg font-bold text-slate-900">
+                    {value} <span className="text-xs font-normal text-slate-400">of {total}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {viewModel.contactCompanyHygiene.gaps.length === 0 ? (
+              <EmptyState label="No contact or company data-hygiene issues detected." />
+            ) : (
+              <div className="space-y-2 max-h-96 overflow-y-auto scroll-thin">
+                {viewModel.contactCompanyHygiene.gaps.map((gap, i) => (
+                  <div key={i} className="rounded-lg border border-slate-100 p-3 flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="text-xs font-semibold text-slate-900">
+                        {gap.recordName}{" "}
+                        <span className="text-slate-400 font-normal">
+                          · {gap.recordType === "contact" ? "Contact" : "Company"} · {gap.field}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5">{gap.why}</div>
+                      <div className="text-xs text-blue-700 mt-0.5">Suggested: {gap.recommendation}</div>
+                    </div>
+                    <div className="flex flex-col items-end gap-1">
+                      <span className="text-[11px] rounded-full bg-slate-100 px-2 py-0.5 text-slate-600">{gap.category}</span>
+                      <a href={gap.recordUrl} target="_blank" rel="noreferrer" className="text-[11px] text-blue-600 font-medium inline-flex items-center gap-1">
                         Open <ExternalLink size={10} />
                       </a>
                     </div>

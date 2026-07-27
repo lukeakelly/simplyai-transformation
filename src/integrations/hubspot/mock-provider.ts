@@ -399,12 +399,51 @@ export class MockHubSpotProvider implements HubSpotProvider {
       isActive: true,
     };
 
+    // Deliberately missing for a couple of companies/contacts, to demonstrate the data-hygiene section.
+    const INDUSTRY_BY_COMPANY: Record<string, string> = {
+      "Aurora Health Group": "Healthcare",
+      "Bluewater Logistics": "Transport & logistics",
+      "Meridian Financial Services": "Financial services",
+      "Northline Retail Co": "Retail",
+      "Southport Council": "Government",
+      "Delta Minerals": "Mining & resources",
+      "Harborview Insurance": "Insurance",
+      // Kestrel Manufacturing intentionally omitted — missing industry
+      // Wavelength Media intentionally omitted — missing industry
+      "Ironbark Energy": "Energy & utilities",
+      "Coastal Produce Group": "Agribusiness",
+      "Union Freight Co": "Transport & logistics",
+      "Prosper Housing Trust": "Community & housing",
+      "Northgate Brewing": "Food & beverage",
+      "Vantage Legal Partners": "Legal services",
+      "Redline Motors": "Automotive",
+      "Golden Fields Agribusiness": "Agribusiness",
+    };
+    const JOB_TITLE_BY_CONTACT: Record<string, string> = {
+      "Priya Chandra": "Chief Information Officer",
+      // Tom Whitfield intentionally omitted — missing job title
+      "Sarah Nguyen": "Head of Operations",
+      "Ben Ahmadi": "Finance Manager",
+      "Grace Liu": "Director of Digital Services",
+      "Jack Osei": "Maintenance Manager",
+      "Elena Marsh": "VP Claims",
+      // Marcus Webb intentionally omitted — missing job title
+      "Amy Fitzgerald": "Operations Manager",
+      "Diane Okoro": "Logistics Director",
+      "Lena Ford": "Tenant Services Manager",
+      "Callum Reid": "Operations Lead",
+      "Nadia Farouk": "Practice Manager",
+      "Owen Barrett": "Service Manager",
+      "Ruth Palmer": "Agribusiness Lead",
+    };
+
     const companyNames = Array.from(new Set(DEAL_SEEDS.map((d) => d.company)));
     const companies: HubSpotCompany[] = companyNames.map((name, i) => ({
       id: `co-${i + 1}`,
       name,
-      domain: `${name.toLowerCase().replace(/[^a-z0-9]+/g, "")}.example.com`,
-      industry: null,
+      // Delta Minerals intentionally has no domain on file — missing company detail.
+      domain: name === "Delta Minerals" ? null : `${name.toLowerCase().replace(/[^a-z0-9]+/g, "")}.example.com`,
+      industry: INDUSTRY_BY_COMPANY[name] ?? null,
       companyUrl: `https://app.hubspot.com/contacts/demo-portal/company/co-${i + 1}`,
     }));
     const companyIdByName = new Map(companies.map((c) => [c.name, c.id]));
@@ -420,7 +459,7 @@ export class MockHubSpotProvider implements HubSpotProvider {
         id,
         fullName: seed.contact,
         email: `${seed.contact.toLowerCase().replace(/[^a-z]+/g, ".")}@${companyIdByName.get(seed.company) ? seed.company.toLowerCase().replace(/[^a-z0-9]+/g, "") : "example"}.example.com`,
-        jobTitle: null,
+        jobTitle: JOB_TITLE_BY_CONTACT[seed.contact] ?? null,
         companyId: companyIdByName.get(seed.company) ?? null,
         isDecisionMaker: null,
         contactUrl: `https://app.hubspot.com/contacts/demo-portal/contact/${id}`,

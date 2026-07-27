@@ -588,6 +588,101 @@ export function buildDataQualitySummary(deals: HubSpotDeal[], now: Date): DataQu
 }
 
 // ---------------------------------------------------------------------------
+// Contact & company data hygiene
+// ---------------------------------------------------------------------------
+
+export type ContactCompanyGapCategory = "Missing contact detail" | "Missing company detail";
+
+export type ContactCompanyGap = {
+  recordType: "contact" | "company";
+  recordId: string;
+  recordName: string;
+  field: string;
+  category: ContactCompanyGapCategory;
+  why: string;
+  recommendation: string;
+  recordUrl: string;
+};
+
+export type ContactCompanyHygiene = {
+  contactCount: number;
+  companyCount: number;
+  contactsMissingEmail: number;
+  contactsMissingJobTitle: number;
+  companiesMissingDomain: number;
+  companiesMissingIndustry: number;
+  gaps: ContactCompanyGap[];
+};
+
+export function buildContactCompanyHygiene(snapshot: HubSpotSnapshot): ContactCompanyHygiene {
+  const gaps: ContactCompanyGap[] = [];
+
+  for (const contact of snapshot.contacts) {
+    if (!contact.email) {
+      gaps.push({
+        recordType: "contact",
+        recordId: contact.id,
+        recordName: contact.fullName,
+        field: "Email",
+        category: "Missing contact detail",
+        why: "No email on file — this contact can't be reached electronically or matched against marketing activity.",
+        recommendation: "Add an email address for this contact.",
+        recordUrl: contact.contactUrl,
+      });
+    }
+    if (!contact.jobTitle) {
+      gaps.push({
+        recordType: "contact",
+        recordId: contact.id,
+        recordName: contact.fullName,
+        field: "Job title",
+        category: "Missing contact detail",
+        why: "Without a job title it's hard to judge seniority or decision-making authority.",
+        recommendation: "Record this contact's job title.",
+        recordUrl: contact.contactUrl,
+      });
+    }
+  }
+
+  for (const company of snapshot.companies) {
+    if (!company.domain) {
+      gaps.push({
+        recordType: "company",
+        recordId: company.id,
+        recordName: company.name,
+        field: "Domain",
+        category: "Missing company detail",
+        why: "No domain on file — harder to enrich, de-duplicate or match this company to future leads.",
+        recommendation: "Add the company's website domain.",
+        recordUrl: company.companyUrl,
+      });
+    }
+    if (!company.industry) {
+      gaps.push({
+        recordType: "company",
+        recordId: company.id,
+        recordName: company.name,
+        field: "Industry",
+        category: "Missing company detail",
+        why: "Missing industry limits segmentation, targeting and pipeline reporting by sector.",
+        recommendation: "Set this company's industry.",
+        recordUrl: company.companyUrl,
+      });
+    }
+  }
+
+  return {
+    contactCount: snapshot.contacts.length,
+    companyCount: snapshot.companies.length,
+    contactsMissingEmail: snapshot.contacts.filter((c) => !c.email).length,
+    contactsMissingJobTitle: snapshot.contacts.filter((c) => !c.jobTitle).length,
+    companiesMissingDomain: snapshot.companies.filter((c) => !c.domain).length,
+    companiesMissingIndustry: snapshot.companies.filter((c) => !c.industry).length,
+    gaps,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Pipeline overview
 // ---------------------------------------------------------------------------
 
@@ -704,6 +799,7 @@ export type SalesCommandCentreViewModel = {
   priorities: PriorityAction[];
   exceptions: DealException[];
   dataQuality: DataQualitySummary;
+  contactCompanyHygiene: ContactCompanyHygiene;
   pipeline: PipelineOverview;
   whatMattersToday: string[];
   openDealCount: number;
@@ -725,6 +821,7 @@ export function buildSalesCommandCentreViewModel(
   const priorities = filterActionedPriorities(buildTodaysPriorities(snapshot.deals, snapshot.tasks, now), activityActions, now);
   const exceptions = buildExceptions(snapshot.deals, now);
   const dataQuality = buildDataQualitySummary(snapshot.deals, now);
+  const contactCompanyHygiene = buildContactCompanyHygiene(snapshot);
   const pipeline = buildPipelineOverview(snapshot.deals, period);
   const whatMattersToday = buildWhatMattersToday(priorities, performance, dataQuality);
 
@@ -747,6 +844,7 @@ export function buildSalesCommandCentreViewModel(
     priorities,
     exceptions,
     dataQuality,
+    contactCompanyHygiene,
     pipeline,
     whatMattersToday,
     openDealCount: snapshot.deals.filter((d) => !d.isClosedWon && !d.isClosedLost).length,
