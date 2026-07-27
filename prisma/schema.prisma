@@ -9,16 +9,22 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  username     String   @unique
-  name         String   @default("")
-  passwordHash String
-  role         String
-  permission   String   @default("editor")
-  isAdmin      Boolean  @default(false)
-  comments     Comment[]
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id              String   @id @default(cuid())
+  username        String   @unique
+  name            String   @default("")
+  passwordHash    String
+  role            String
+  permission      String   @default("editor")
+  isAdmin         Boolean  @default(false)
+  /** HubSpot owner ID this user maps to for Sales Command Centre scoping. Null until linked. */
+  hubspotOwnerId  String?
+  comments        Comment[]
+  salesTargets    SalesTarget[]
+  salesActivityActions SalesActivityAction[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([hubspotOwnerId])
 }
 
 model AuditLog {
@@ -220,4 +226,41 @@ model ResourceOutboundEvent {
   @@index([eventType])
   @@index([status])
   @@index([correlationId])
+}
+
+/// Manually entered sales targets, kept per user until HubSpot-native target
+/// data (e.g. Goals) is wired up to replace them without changing the UI contract.
+model SalesTarget {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// "MONTH" | "QUARTER" | "YEAR"
+  periodType String
+  /// e.g. "2026-07" (month), "2026-Q3" (calendar quarter), "FY2027" (1 Jul-30 Jun)
+  periodKey  String
+  amount     Float
+  currency   String   @default("AUD")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, periodType, periodKey])
+  @@index([userId])
+}
+
+/// Local-only record of what a salesperson did with a "Today's priorities" action.
+/// Never written back to HubSpot — write-back is a future, explicitly-confirmed capability.
+model SalesActivityAction {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  externalId   String
+  externalType String
+  /// "COMPLETE" | "SNOOZE" | "DISMISS"
+  actionType   String
+  reason       String?
+  snoozedUntil DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+  @@index([userId, externalId])
 }
